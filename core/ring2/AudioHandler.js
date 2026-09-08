@@ -21,15 +21,17 @@ class AudioHandler {
     if (groqKey) {
       try {
         console.log('🎙️ [AUDIO_HANDLER] Transcrevendo áudio via Groq Whisper...');
-        const blob = new Blob([buffer], { type: mimeType || 'audio/webm' });
-        const formData = new FormData();
         const ext = (mimeType || '').includes('ogg')
           ? 'ogg'
           : (mimeType || '').includes('mp4') || (mimeType || '').includes('m4a')
             ? 'm4a'
             : 'webm';
-        formData.append('file', blob, `audio.${ext}`);
-        formData.append('model', 'whisper-large-v3-turbo');
+        
+        // Em Node.js nativo (v20+), File é a forma mais robusta de garantir que o 'filename' e 'type' sejam respeitados no FormData
+        const file = new File([buffer], `audio.${ext}`, { type: mimeType || 'audio/webm' });
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('model', 'whisper-large-v3'); // fallback seguro para o modelo padrão da Groq
         formData.append('language', 'pt');
 
         const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {

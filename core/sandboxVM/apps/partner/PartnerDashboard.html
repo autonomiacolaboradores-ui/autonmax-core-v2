@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AUTON.MAX — Partner Dashboard (FDU)</title>
+  <style>
+    :root {
+      --bg: #0d1117; --panel: #161b22; --border: #30363d;
+      --accent: #58a6ff; --ok: #3fb950; --warn: #d29922; --danger: #f85149;
+      --text: #e6edf3; --muted: #8b949e;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
+    header {
+      padding: 1rem 1.5rem; background: var(--panel); border-bottom: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    header h1 { font-size: 1rem; font-weight: 600; }
+    header h1 span { color: var(--accent); }
+    .badge {
+      font-size: 0.7rem; padding: 0.2rem 0.55rem; border-radius: 999px;
+      background: #21262d; color: var(--muted);
+    }
+    .badge.alert { background: #3d1f1f; color: var(--danger); }
+    main { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; padding: 1rem; max-width: 1100px; margin: 0 auto; }
+    @media (max-width: 720px) { main { grid-template-columns: 1fr; } }
+    section {
+      background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 1rem;
+    }
+    section h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 0.75rem; }
+    .item {
+      padding: 0.65rem 0; border-bottom: 1px solid var(--border); font-size: 0.85rem;
+    }
+    .item:last-child { border-bottom: none; }
+    .item .tag { font-size: 0.65rem; color: var(--accent); }
+    .item.warn .tag { color: var(--danger); }
+    #alerts:empty::after { content: "Nenhum transbordo pendente"; color: var(--muted); font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>FDU Partner · <span>AUTON.MAX</span></h1>
+    <div id="status" class="badge">aguardando feed…</div>
+  </header>
+  <main>
+    <section>
+      <h2>Atendimento ao vivo</h2>
+      <div id="feed"></div>
+    </section>
+    <section>
+      <h2>Transbordo Anti-Loop (HITL)</h2>
+      <div id="alerts"></div>
+    </section>
+  </main>
+  <script>
+    const feed = document.getElementById('feed');
+    const alerts = document.getElementById('alerts');
+    const status = document.getElementById('status');
+
+    // Placeholder — in production connects to SurfaceBridge topic whatsapp.message / partner.alert
+    function onPartnerAlert(alert) {
+      status.textContent = 'AÇÃO HUMANA NECESSÁRIA';
+      status.classList.add('alert');
+      const el = document.createElement('div');
+      el.className = 'item warn';
+      el.innerHTML = '<div class="tag">HITL_HANDOVER</div>' +
+        '<div>Sessão ' + alert.sessionId + ' · ' + alert.failures + ' falhas</div>';
+      alerts.prepend(el);
+    }
+
+    function onMessage(msg) {
+      const el = document.createElement('div');
+      el.className = 'item';
+      el.innerHTML = '<div class="tag">' + (msg.sessionId || '') + '</div>' +
+        '<div>' + (msg.body || JSON.stringify(msg)) + '</div>';
+      feed.prepend(el);
+    }
+
+    // Expose for engine injection / tests
+    window.__FDU_DASHBOARD__ = { onPartnerAlert, onMessage };
+  </script>
+</body>
+</html>

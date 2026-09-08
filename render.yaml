@@ -1,0 +1,24 @@
+# render.yaml — Render Infrastructure as Code specification for AUTON.MAX v3.0-FUSION
+services:
+  - type: web
+    name: autonmax-core-v2
+    env: node
+    region: oregon
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 22.5.0
+      - key: AUTON_GENESIS_SECRET
+        generateValue: true
+      - key: GROQ_API_KEY
+        sync: false # Set in Render Dashboard
+      - key: OPENAI_API_KEY
+        sync: false # Set in Render Dashboard
+      - key: GEMINI_API_KEY
+        sync: false # Set in Render Dashboard
+      - key: OPENROUTER_API_KEY
+        sync: false # Set in Render Dashboard

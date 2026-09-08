@@ -1,0 +1,28 @@
+{
+  "name": "AUTON.MAX",
+  "short_name": "AUTON.MAX",
+  "description": "Atendente PME no WhatsApp — Autonmax",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050810",
+  "theme_color": "#00A3FF",
+  "offline_enabled": true,
+  "permissions": [
+    "ipc_bridge",
+    "notifications",
+    "microphone"
+  ],
+  "icons": [
+    {
+      "src": "assets/img/logo-autonmax.jpg",
+      "sizes": "192x192",
+      "type": "image/jpeg"
+    },
+    {
+      "src": "assets/img/logo-autonmax.jpg",
+      "sizes": "512x512",
+      "type": "image/jpeg"
+    }
+  ],
+  "version": "3.2.0"
+}

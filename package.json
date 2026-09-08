@@ -1,0 +1,25 @@
+{
+  "name": "autonmax",
+  "version": "3.2.0",
+  "description": "AUTON.MAX — PME (WhatsApp + Atendente IA). OPS-3..7: prompt pin, metrics/daily, WA watchdog, tools registry, multi-line.",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "start": "node bin/autonmax-launch.js",
+    "start:daemon": "node bin/autonmax-daemon.js",
+    "build:pwa": "vite build",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.24",
+    "better-sqlite3": "^13.0.3",
+    "dotenv": "^16.6.1",
+    "link-preview-js": "^3.2.0",
+    "puppeteer": "^22.14.0",
+    "qrcode": "^1.5.4",
+    "sqlite3": "^5.1.7"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

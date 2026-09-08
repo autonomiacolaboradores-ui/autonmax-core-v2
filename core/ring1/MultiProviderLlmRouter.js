@@ -91,7 +91,7 @@ class MultiProviderLlmRouter {
         try {
           const groqKey = this.keys.groq || process.env.GROQ_API_KEY;
           if (groqKey && this.isProviderHealthy('groq')) {
-            const candidateModels = [this.models.groq || 'llama-3.3-70b-versatile', 'llama3-8b-8192'];
+            const candidateModels = [this.models.groq || 'openai/gpt-oss-120b', 'llama3-8b-8192'];
             for (const modelName of candidateModels) {
               try {
                 const groqResult = await this._callOpenAiCompatible({

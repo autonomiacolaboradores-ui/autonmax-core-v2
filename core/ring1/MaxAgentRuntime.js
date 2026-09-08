@@ -193,6 +193,10 @@ class MaxAgentRuntime {
         if (row && row.business_rules) {
           const br = typeof row.business_rules === 'string' ? JSON.parse(row.business_rules) : row.business_rules;
           if (br && br.catalog && typeof br.catalog === 'string' && br.catalog.trim().length > 0) {
+            const lines = br.catalog.split('\n').map(l => l.trim()).filter(Boolean);
+            const parsed = [];
+            for (const line of lines) {
+              const m = line.match(/^[-•*]?\s*([A-Za-zÀ-ú0-9\s()“"”/]+?)(?:\s*[:–—-]|\s*\$|\s*R\$|\s*\d)/i);
               if (m && m[1].trim().length >= 3) {
                 parsed.push({ name: m[1].trim() });
               }
@@ -210,6 +214,28 @@ class MaxAgentRuntime {
       }
     } catch (_) {}
 
+    return [];
+  }
+
+  _getPartnerProductsCatalog(partnerId) {
+    try {
+      const sqlitePath = require('path').join(__dirname, '../../workspace/autonmax.db');
+      if (require('fs').existsSync(sqlitePath)) {
+        const { DatabaseSync } = require('node:sqlite');
+        const db = new DatabaseSync(sqlitePath, { open: true });
+        const row = db.prepare('SELECT business_rules FROM pme_configs_v2 WHERE partner_id = ?').get(partnerId);
+        db.close();
+        if (row && row.business_rules) {
+          const br = typeof row.business_rules === 'string' ? JSON.parse(row.business_rules) : row.business_rules;
+          if (br && br.products && typeof br.products === 'string' && br.products.trim().length > 0) {
+            const PmeOrderTools = require('../ring2/PmeOrderTools');
+            return PmeOrderTools.parseProductsCatalog(br.products);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('[PME_AGENT] Erro ao buscar catálogo de produtos SQLite:', err.message);
+    }
     return [];
   }
 

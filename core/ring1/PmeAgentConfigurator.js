@@ -649,6 +649,10 @@ class PmeAgentConfigurator {
           ? config.catalog.map(c => `- ${c.name}: R$ ${(c.priceCents / 100).toFixed(2)} (${c.durationMinutes} min) - ${c.description}`).join('\n')
           : 'Consulte nossos atendentes para tabela de preços.');
 
+    const productsStr = (businessRules.products !== undefined && businessRules.products !== null)
+      ? (businessRules.products || 'Nenhum produto cadastrado para venda.')
+      : 'Nenhum produto cadastrado para venda.';
+
     const hoursStr = (businessRules.schedules !== undefined && businessRules.schedules !== null)
       ? (businessRules.schedules || 'Consulte nossos horários de atendimento.')
       : (config.workingHours ? `Dias: ${config.workingHours.days.join(', ')} das ${config.workingHours.startTime} às ${config.workingHours.endTime}` : 'Segunda a Sábado em horário comercial');
@@ -677,6 +681,9 @@ ${userConfiguredPersonality}
 
 • CATÁLOGO DE SERVIÇOS & PREÇOS:
 ${catalogStr}
+
+• CATÁLOGO DE PRODUTOS PARA VENDA:
+${productsStr}
 
 • HORÁRIOS DE FUNCIONAMENTO:
 ${hoursStr}

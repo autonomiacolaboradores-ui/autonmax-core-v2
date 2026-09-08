@@ -1138,6 +1138,56 @@ Responda APENAS com o JSON válido, sem markdown e sem blocos \`\`\`.`;
           }
         }
 
+        // 1.6 Resumo de Pedidos (Agrupamento por Dia)
+        const ordersSummaryMatch = pathname.match(/^\/api(?:\/v1)?\/pme\/([^\/]+)\/orders\/summary$/);
+        if (req.method === 'GET' && ordersSummaryMatch) {
+          try {
+            const partnerId = ordersSummaryMatch[1];
+            const config = this.pmeConfigurator.getAttendantConfig(partnerId);
+            const orders = (config && config.existingOrders) ? config.existingOrders : [];
+            
+            const summaryMap = {};
+            for (const order of orders) {
+              if (!order.createdAt) continue;
+              const dateStr = order.createdAt.split('T')[0]; // Extract YYYY-MM-DD
+              if (!summaryMap[dateStr]) {
+                summaryMap[dateStr] = 0;
+              }
+              summaryMap[dateStr]++;
+            }
+            
+            const summary = Object.keys(summaryMap).map(dateStr => ({
+              dateStr,
+              count: summaryMap[dateStr]
+            })).sort((a, b) => a.dateStr.localeCompare(b.dateStr));
+            
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ status: 'SUCCESS', summary }));
+          } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ status: 'ERROR', error: err.message }));
+          }
+        }
+
+        // 1.7 PDF Local / Lista de Pedidos
+        const ordersListMatch = pathname.match(/^\/api(?:\/v1)?\/pme\/([^\/]+)\/orders\/(local|pdf)$/);
+        if (req.method === 'GET' && ordersListMatch) {
+          try {
+            const partnerId = ordersListMatch[1];
+            const urlObj = require('url').parse(req.url, true);
+            const dateFilter = urlObj.query.date || null;
+            const OrderListPdf = require('./OrderListPdf');
+            const pdfResult = await OrderListPdf.generateOrdersPdf(partnerId, this.pmeConfigurator, this.pdfEngine, dateFilter);
+            
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ status: 'SUCCESS', downloadUrl: pdfResult.downloadUrl }));
+          } catch (err) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ status: 'ERROR', error: err.message }));
+          }
+        }
+
+
         // 2. Connect: GET /api/v1/pme/:partnerId/google-calendar/connect ou /api/pme/:partnerId/google-calendar/connect
         const connectMatch = pathname.match(/^\/api(?:\/v1)?\/pme\/([^\/]+)\/google-calendar\/connect$/);
         if (req.method === 'GET' && connectMatch) {

@@ -47,6 +47,7 @@ function _metric(type, partnerId, meta) {
  * Limitação documentada: não sobrevive a múltiplas réplicas (evoluir para SQLite booking_drafts).
  */
 const _bookingDraft = new Map();
+const _orderDraft = new Map();
 
 const DRAFT_DISK_PATH = path.join(__dirname, '../../workspace/booking_drafts.json');
 const _turnLocks = new Map();
@@ -72,7 +73,12 @@ function _persistDraftsToDisk() {
     const obj = {};
     const now = Date.now();
     for (const [k, v] of _bookingDraft.entries()) {
-      if (v.expiresAt > now) obj[k] = v;
+      if (v.expiresAt < now) { _bookingDraft.delete(k); } else { obj[k] = v; }
+    }
+    // We only save _bookingDraft to the JSON to avoid mixing order Drafts in the same JSON. 
+    // If needed we can save _orderDraft to another file, but for now memory is fine.
+    for (const [k, v] of _orderDraft.entries()) {
+      if (v.expiresAt < now) _orderDraft.delete(k);
     }
     const tmp = `${DRAFT_DISK_PATH}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf-8');
@@ -187,10 +193,6 @@ class MaxAgentRuntime {
         if (row && row.business_rules) {
           const br = typeof row.business_rules === 'string' ? JSON.parse(row.business_rules) : row.business_rules;
           if (br && br.catalog && typeof br.catalog === 'string' && br.catalog.trim().length > 0) {
-            const lines = br.catalog.split('\n').map(l => l.trim()).filter(Boolean);
-            const parsed = [];
-            for (const line of lines) {
-              const m = line.match(/^[-•*]?\s*([A-Za-zÀ-ú0-9\s()“"”/]+?)(?:\s*[:–—-]|\s*\$|\s*R\$|\s*\d)/i);
               if (m && m[1].trim().length >= 3) {
                 parsed.push({ name: m[1].trim() });
               }
@@ -363,6 +365,33 @@ class MaxAgentRuntime {
 
   _clearDraft(partnerId, userKey) {
     _bookingDraft.delete(this._draftKey(partnerId, userKey));
+    _persistDraftsToDisk();
+  }
+
+  _saveOrderDraft(partnerId, userKey, data) {
+    const key = this._draftKey(partnerId, userKey);
+    const row = {
+      ...data,
+      expiresAt: Date.now() + BOOKING_DRAFT_TTL_MS
+    };
+    _orderDraft.set(key, row);
+    _persistDraftsToDisk();
+  }
+
+  _readOrderDraft(partnerId, userKey) {
+    const key = this._draftKey(partnerId, userKey);
+    let d = _orderDraft.get(key);
+    if (!d) return null;
+    if (Date.now() > d.expiresAt) {
+      _orderDraft.delete(key);
+      _persistDraftsToDisk();
+      return null;
+    }
+    return d;
+  }
+
+  _clearOrderDraft(partnerId, userKey) {
+    _orderDraft.delete(this._draftKey(partnerId, userKey));
     _persistDraftsToDisk();
   }
 
@@ -637,7 +666,7 @@ class MaxAgentRuntime {
    */
   classifyPmeMulti(text) {
     const intents = [];
-    const order = ['pricing', 'catalog', 'booking', 'cancel', 'hours', 'policies', 'location', 'duration', 'thanks', 'greeting'];
+    const order = ['order', 'pricing', 'catalog', 'booking', 'cancel', 'hours', 'policies', 'location', 'duration', 'thanks', 'greeting'];
     // R1.7: normalizar gírias e regionalismos ANTES do classify
     const rawText = String(text || '');
     let t = rawText;
@@ -648,6 +677,7 @@ class MaxAgentRuntime {
       }
     }
     const checks = {
+      order: /\b(comprar|fazer pedido|quero comprar|quero pedir|produto|unidades)\b/i,
       pricing: /\b(pre[cç]o|valor|quanto custa|tabela|or[cç]amento|r\$)\b/i,
       catalog: /\b(servi[cç]os?|cat[aá]logo|card[aá]pio|o que (voc[eê]s?|vc) (faz|oferece))\b/i,
       booking: /\b(agendar|marcar|hor[aá]rio dispon|vaga|reservar|quando posso|quero agendar)\b/i,
@@ -689,6 +719,138 @@ class MaxAgentRuntime {
 
       const existingDraft = this._readDraft(pid, uid);
       const isConfirming = this._detectConfirmation(userMessage);
+
+      // ── FSM de Pedidos ──────────────────────────────────────────────────────────
+      const existingOrderDraft = this._readOrderDraft(pid, uid);
+      const tempIntents = this.classifyPmeMulti(userMessage);
+
+      if (existingOrderDraft || tempIntents.includes('order')) {
+        let draft = existingOrderDraft || { stage: 'order_draft', items: [] };
+
+        if (/\\b(desistir|esquece|cancela|cancelar)\\b/i.test(userMessage)) {
+           this._clearOrderDraft(pid, uid);
+        } else {
+           let name = this.extractClientName(userMessage, { requireExplicitIntro: !!draft.clientName }) || draft.clientName;
+           let cleanPushName = (typeof pushName === 'string' && pushName.trim().length >= 2) ? pushName.trim() : '';
+           
+           if (!name || name.startsWith('usr_') || name.startsWith('usr_nat_') || name.length < 3) {
+             name = null;
+           }
+           draft.clientName = name || cleanPushName || 'Cliente';
+           draft.customerPhone = uid.includes('@') ? uid.split('@')[0] : uid;
+
+           console.log(`[ORDER_FLOW] Analisando pedido de: ${draft.clientName} / ${draft.customerPhone}`);
+
+           const PmeOrderTools = require('../ring2/PmeOrderTools');
+           const productCatalog = this._getPartnerProductsCatalog(pid);
+
+           // Tentar regex robusta: "2 bolo", "1 camiseta", "quero uma camiseta", "dois produtos", "1x produto"
+           const regex = /(?:(\d+|um|uma|dois|duas|três|tres|quatro|cinco)\s*(?:x|unidades? de|de)?\s*)([a-zA-ZÀ-ÿ0-9\s]+?)(?:(?:\s+e\s+)|,|\.|\n|$)/gi;
+           let match;
+           let newItems = [];
+           
+           const wordToNum = { 'um':1, 'uma':1, 'dois':2, 'duas':2, 'três':3, 'tres':3, 'quatro':4, 'cinco':5 };
+           
+           while ((match = regex.exec(userMessage)) !== null) {
+             const qtyRaw = match[1].toLowerCase();
+             const quantity = parseInt(qtyRaw) || wordToNum[qtyRaw] || 1;
+             const prod = match[2].trim();
+             
+             if (prod.length > 2 && !/^(reais|vezes|dias|minutos|horas|meses|produto)$/i.test(prod)) {
+               // Try to resolve right away for robust mapping
+               const resolved = PmeOrderTools.resolveProduct(productCatalog, prod);
+               if (resolved) {
+                 newItems.push({ quantity, productName: resolved.name, productId: resolved.id, priceCents: resolved.priceCents });
+               } else {
+                 newItems.push({ quantity, productName: prod }); // store raw if not resolved
+               }
+             }
+           }
+
+           // Se achar pelo menos um produto
+           if (newItems.length > 0) {
+             draft.items = newItems;
+             draft.stage = 'order_review';
+             draft.clientConfirmed = false;
+           }
+
+           this._saveOrderDraft(pid, uid, draft);
+
+           if (draft.stage === 'order_review' || (draft.items && draft.items.length > 0)) {
+             if (isConfirming && draft.stage === 'order_review') {
+                console.log(`[ORDER_FLOW] stage=order_confirm_commit client=${draft.clientName}`);
+                
+                let itemsResolved = [];
+                for (const item of draft.items) {
+                   const resolved = item.productId ? item : PmeOrderTools.resolveProduct(productCatalog, item.productName);
+                   if (resolved && resolved.name) {
+                      itemsResolved.push({ 
+                        productId: resolved.id || resolved.productId, 
+                        productName: resolved.name || resolved.productName, 
+                        quantity: item.quantity, 
+                        unitPrice: resolved.priceCents || 0 
+                      });
+                   } else if (productCatalog.length === 0) {
+                      // Permitir genérico apenas se não tiver catálogo
+                      itemsResolved.push({ productId: 'gen', productName: item.productName, quantity: item.quantity, unitPrice: 0 });
+                   } else {
+                      console.log(`[ORDER_FLOW] Hard fail: produto inexistente "${item.productName}"`);
+                      return {
+                        intent: 'order_pending',
+                        facts: [`O produto "${item.productName}" não foi encontrado no catálogo de produtos. Peça para o cliente escolher produtos válidos disponíveis na loja.`],
+                        toolResults: [],
+                        mode: 'pme'
+                      };
+                   }
+                }
+
+                console.log(`[ORDER_COMMIT] Disparando create_order_confirmed | parceiro=${pid}`);
+                const result = await this._dispatch('create_order_confirmed', {
+                  partnerId: pid,
+                  clientName: draft.clientName,
+                  customerPhone: draft.customerPhone,
+                  items: itemsResolved,
+                  confirmed: true
+                }, pid);
+
+                this._clearOrderDraft(pid, uid);
+                return {
+                  intent: 'order_commit',
+                  facts: ['PEDIDO REALIZADO E CONFIRMADO COM SUCESSO ✅', 'O pedido foi salvo no sistema. Agradeça e encerre o assunto informando os detalhes.'],
+                  toolResults: [result],
+                  mode: 'pme'
+                };
+             } else {
+                draft.stage = 'order_review';
+                this._saveOrderDraft(pid, uid, draft);
+                const itemsList = draft.items.map(i => `${i.quantity}x ${i.productName}`).join(', ');
+                return {
+                  intent: 'order_pending',
+                  facts: [
+                    `PEDIDO PRONTO PARA CONFIRMAR.`,
+                    `Resumo do pedido: ${itemsList}.`,
+                    `Mostre um resumo claro para o cliente (produtos e quantidades) e peça confirmação explícita (SIM).`
+                  ],
+                  toolResults: [],
+                  mode: 'pme'
+                };
+             }
+           } else {
+             draft.stage = 'order_draft';
+             this._saveOrderDraft(pid, uid, draft);
+             return {
+               intent: 'order_pending',
+               facts: [
+                 `ESTADO: order_draft.`,
+                 `O cliente demonstrou interesse em fazer um pedido, mas não identificou os produtos e quantidades (ex: "1 camiseta").`,
+                 `Pergunte gentilmente quais produtos e quantidades ele deseja adicionar ao pedido.`
+               ],
+               toolResults: [],
+               mode: 'pme'
+             };
+           }
+        }
+      }
 
       // ── G1/G5: Máquina de estados de confirmação e commit de agendamento ───────
       if (existingDraft && isConfirming) {

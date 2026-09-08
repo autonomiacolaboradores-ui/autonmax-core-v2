@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MAX - Pedidos Confirmados</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        :root {
+            --bg-dark: #0f1115;
+            --bg-card: #181b21;
+            --bg-card-hover: #1e222a;
+            --text-main: #ffffff;
+            --text-muted: #94a3b8;
+            --accent: #00ff88;
+            --accent-glow: rgba(0, 255, 136, 0.2);
+            --border: rgba(255,255,255,0.05);
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-dark);
+            color: var(--text-main);
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /* Sticky Header */
+        header {
+            position: sticky;
+            top: 0;
+            background: rgba(15, 17, 21, 0.85);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            border-bottom: 1px solid var(--border);
+            padding: 1rem 1.5rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            z-index: 100;
+        }
+
+        .header-title {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            font-size: 1.25rem;
+            font-weight: 700;
+        }
+
+        .btn-back {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-main);
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            font-weight: 500;
+            font-size: 0.9rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: all 0.2s;
+        }
+
+        .btn-back:hover {
+            background: rgba(255,255,255,0.05);
+        }
+
+        /* Container Principal */
+        main {
+            padding: 2rem 1.5rem;
+            max-width: 800px;
+            margin: 0 auto;
+        }
+
+        .page-desc {
+            color: var(--text-muted);
+            margin-bottom: 2rem;
+            font-size: 0.95rem;
+            line-height: 1.5;
+        }
+
+        /* Grid de Dias */
+        .days-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 1rem;
+        }
+
+        .day-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+            display: flex;
+            flex-direction: column;
+            gap: 1.25rem;
+            transition: all 0.2s ease;
+        }
+
+        .day-card:hover {
+            background: var(--bg-card-hover);
+            transform: translateY(-2px);
+            box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+            border-color: rgba(255,255,255,0.1);
+        }
+
+        .day-header {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between;
+        }
+
+        .day-date {
+            font-size: 1.2rem;
+            font-weight: 700;
+            margin: 0;
+        }
+
+        .day-badge {
+            background: rgba(0, 255, 136, 0.1);
+            color: var(--accent);
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.8rem;
+            font-weight: 600;
+            border: 1px solid rgba(0, 255, 136, 0.2);
+        }
+
+        .btn-action {
+            background: var(--accent);
+            color: #000;
+            border: none;
+            padding: 0.75rem 1rem;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 0.9rem;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.5rem;
+            width: 100%;
+            transition: all 0.2s;
+            box-shadow: 0 4px 12px var(--accent-glow);
+        }
+
+        .btn-action:hover {
+            transform: scale(1.02);
+            box-shadow: 0 6px 16px var(--accent-glow);
+        }
+
+        .btn-action:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 3rem 1rem;
+            color: var(--text-muted);
+            grid-column: 1 / -1;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 3rem;
+            color: var(--accent);
+        }
+
+    </style>
+</head>
+<body>
+
+    <header>
+        <div class="header-title">
+            <h1 class="header-title" style="margin: 0;"><i data-lucide="shopping-cart" style="color: var(--accent);"></i> Pedidos Confirmados</h1>
+        </div>
+        <button class="btn-back" onclick="window.close()">
+            <i data-lucide="arrow-left" style="width: 18px; height: 18px;"></i>
+            Voltar
+        </button>
+    </header>
+
+    <main>
+        <p class="page-desc">Visualize e interaja com os pedidos gerados pelo Max organizados por dia.</p>
+        
+        <div id="loading" class="loading">
+            <i data-lucide="loader" class="spin" style="width: 32px; height: 32px; animation: spin 1s linear infinite;"></i>
+            <p>Carregando pedidos...</p>
+        </div>
+
+        <div id="daysGrid" class="days-grid" style="display: none;">
+            <!-- Renderizado via JS -->
+        </div>
+    </main>
+
+    <style>
+        @keyframes spin { 100% { transform: rotate(360deg); } }
+    </style>
+
+    <script>
+        lucide.createIcons();
+
+        const urlParams = new URLSearchParams(window.location.search);
+        const partnerId = urlParams.get('partnerId');
+
+        if (!partnerId) {
+            document.getElementById('loading').innerHTML = '<p style="color: #ef4444;">Erro: ID do Parceiro não informado na URL.</p>';
+        } else {
+            loadOrders();
+        }
+
+        async function loadOrders() {
+            try {
+                // Tenta chamar /api/v1 (ou /api/) 
+                const res = await fetch('/api/pme/' + partnerId + '/orders/summary');
+                if (!res.ok) throw new Error('Falha na API');
+                
+                const data = await res.json();
+                
+                document.getElementById('loading').style.display = 'none';
+                const grid = document.getElementById('daysGrid');
+                grid.style.display = 'grid';
+
+                if (!data.summary || data.summary.length === 0) {
+                    grid.innerHTML = `
+                        <div class="empty-state">
+                            <i data-lucide="calendar-x" style="width: 48px; height: 48px; margin-bottom: 1rem; opacity: 0.5;"></i>
+                            <h3>Nenhum pedido encontrado</h3>
+                            <p>Quando houver novos pedidos confirmados, eles aparecerão aqui.</p>
+                        </div>
+                    `;
+                    lucide.createIcons();
+                    return;
+                }
+
+                data.summary.forEach(item => {
+                    const parts = item.dateStr.split('-');
+                    const niceDate = parts.length === 3 ? parts[2] + '/' + parts[1] + '/' + parts[0] : item.dateStr;
+
+                    const card = document.createElement('div');
+                    card.className = 'day-card';
+                    card.innerHTML = `
+                        <div class="pdf-icon"><i data-lucide="file-text"></i></div>
+                        <div>
+                            <h4 style="margin: 0 0 0.25rem 0; font-size: 1rem; color: #fff;">Lista de Pedidos (PDF)</h4>
+                            <p style="margin: 0; font-size: 0.8rem; color: var(--text-muted);">Baixar o extrato diário dos pedidos.</p>
+                        </div>
+                        <div class="day-header">
+                            <div>
+                                <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0 0 0.25rem 0;">Data</p>
+                                <h3 class="day-date">${niceDate}</h3>
+                            </div>
+                            <div class="day-badge">
+                                ${item.count} Pedido(s)
+                            </div>
+                        </div>
+                        <button class="btn-action" onclick="exportDay('${item.dateStr}', this)">
+                            <i data-lucide="file-down" style="width: 18px; height: 18px;"></i>
+                            Gerar PDF
+                        </button>
+                    `;
+                    grid.appendChild(card);
+                });
+
+                lucide.createIcons();
+
+            } catch (err) {
+                console.error(err);
+                document.getElementById('loading').innerHTML = '<p style="color: #ef4444;">Erro ao carregar agendamentos.</p>';
+            }
+        }
+
+        async function exportDay(dateStr, btnElement) {
+            const originalHtml = btnElement.innerHTML;
+            btnElement.disabled = true;
+            btnElement.innerHTML = '<i data-lucide="loader" style="animation: spin 1s linear infinite;"></i> Gerando...';
+            lucide.createIcons();
+
+            try {
+                const res = await fetch('/api/pme/' + partnerId + '/orders/local?date=' + dateStr);
+                const data = await res.json();
+                
+                if (data.status === 'SUCCESS' && data.downloadUrl) {
+                    // Abrir em nova aba/Forçar download do PDF real em vez de compartilhar link localhost
+                    window.open(data.downloadUrl, '_blank');
+                } else {
+                    alert('Erro ao gerar PDF: ' + (data.error || 'Desconhecido'));
+                }
+            } catch (err) {
+                console.error(err);
+                alert('Erro de conexão ao gerar o arquivo.');
+            } finally {
+                btnElement.disabled = false;
+                btnElement.innerHTML = originalHtml;
+                lucide.createIcons();
+            }
+        }
+    </script>
+</body>
+</html>

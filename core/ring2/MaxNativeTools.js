@@ -1,3 +1,5 @@
+
+
 'use strict';
 
 /**
@@ -61,6 +63,36 @@ class MaxNativeTools {
             priceLabel: { type: 'STRING' }
           },
           required: ['clientName', 'serviceName', 'dateStr', 'timeSlot', 'confirmed']
+        }
+      },
+      {
+        name: 'create_order_confirmed',
+        description: 'Finaliza pedido de produtos após confirmação explícita (SIM) do cliente.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            partnerId: { type: 'STRING' },
+            clientName: { type: 'STRING' },
+            customerPhone: { type: 'STRING' },
+            items: {
+              type: 'ARRAY',
+              items: {
+                type: 'OBJECT',
+                properties: {
+                  productId: { type: 'STRING' },
+                  productName: { type: 'STRING' },
+                  quantity: { type: 'NUMBER' },
+                  unitPrice: { type: 'NUMBER' }
+                }
+              }
+            },
+            paymentMethod: { type: 'STRING' },
+            deliveryType: { type: 'STRING' },
+            address: { type: 'STRING' },
+            notes: { type: 'STRING' },
+            confirmed: { type: 'BOOLEAN' }
+          },
+          required: ['partnerId', 'clientName', 'items', 'confirmed']
         }
       },
       {
@@ -202,6 +234,54 @@ class MaxNativeTools {
     ];
   }
 
+  /** Implementação do create_order_confirmed */
+  static async create_order_confirmed(args = {}) {
+    const tool = 'create_order_confirmed';
+
+    let clientName = (args.clientName || '').trim();
+    if (!clientName || clientName.startsWith('usr_') || clientName.startsWith('usr_nat_') || clientName.length < 3) {
+      clientName = 'Cliente';
+    }
+
+    const items = Array.isArray(args.items) ? args.items : [];
+    if (items.length === 0) {
+      return { error: '[PME_ORDER] items é obrigatório e não pode ser vazio' };
+    }
+
+    for (const item of items) {
+      if (!item.productName || item.productName.length < 2) {
+        return { error: `[PME_ORDER] productName inválido: ${item.productName}` };
+      }
+      if (!item.quantity || item.quantity <= 0) {
+        return { error: `[PME_ORDER] quantity inválida para ${item.productName}` };
+      }
+    }
+
+    if (args.confirmed !== true) {
+      return { error: '[PME_ORDER] create_order_confirmed exige confirmed=true. O cliente não confirmou o pedido formalmente.' };
+    }
+
+    const PmeOrderTools = require('./PmeOrderTools');
+
+    try {
+      const result = await PmeOrderTools.createOrder({
+        partnerId: args.partnerId,
+        clientName,
+        customerPhone: args.customerPhone || null,
+        items,
+        paymentMethod: args.paymentMethod || null,
+        deliveryType: args.deliveryType || null,
+        address: args.address || null,
+        notes: args.notes || null,
+        remoteJid: args.remoteJid || null
+      });
+
+      return result;
+    } catch (err) {
+      return { error: err.message || 'Falha ao salvar o pedido.' };
+    }
+  }
+
   /** Tópico 21 */
   static async book_appointment_confirmed(args = {}) {
     const tool = 'book_appointment_confirmed';
@@ -293,7 +373,7 @@ class MaxNativeTools {
           serviceName: result.appointment.serviceName || serviceName,
           customerPhone: args.customerPhone
         });
-      } catch (_) {}
+      } catch (_) { }
       try {
         getHappyPath().clients.touch({
           partnerId,
@@ -302,7 +382,7 @@ class MaxNativeTools {
           lastService: result.appointment.serviceName || serviceName,
           lastDate: result.appointment.dateStr || args.dateStr
         });
-      } catch (_) {}
+      } catch (_) { }
     }
     return { ...result, tool, topic: 21 };
   }

@@ -236,6 +236,14 @@
                             </div>
 
                             <div class="knowledge-card" style="padding: 1.25rem 1.5rem;">
+                                <div class="k-icon" style="margin-bottom: 0.75rem;"><i data-lucide="shopping-bag"></i></div>
+                                <h4 style="font-size: 1rem; font-weight: 700; color: var(--text-main); margin-bottom: 0.5rem;">Catálogo de Produtos</h4>
+                                <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.75rem;">Produtos para venda direta e tabela de preços (opcional).</p>
+                                <textarea id="v2_products" class="dark-input" rows="3" placeholder="Ex: Camiseta Preta (R$ 80), Boné (R$ 50)..." style="width: 100%; resize: vertical; background: rgba(255,255,255,0.06); border: 1px solid rgba(0,163,255,0.25); border-radius: 12px; padding: 12px 14px; color: var(--text-primary); font-size: 0.86rem; font-family: inherit; outline: none; line-height: 1.5;"></textarea>
+                            </div>
+
+
+                            <div class="knowledge-card" style="padding: 1.25rem 1.5rem;">
                                 <div class="k-icon" style="margin-bottom: 0.75rem;"><i data-lucide="clock"></i></div>
                                 <h4 style="font-size: 1rem; font-weight: 700; color: var(--text-main); margin-bottom: 0.5rem;">Horários & Agenda</h4>
                                 <p style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.75rem;">Dias e horários de funcionamento do seu estabelecimento.</p>
@@ -286,6 +294,26 @@
                                     <div style="display: flex; align-items: center; gap: 0.5rem;">
                                         <button type="button" class="exec-action-btn primary" style="padding: 0.5rem 1.2rem; font-size: 0.85rem; display: flex; align-items: center; gap: 0.5rem;" onclick="window.open('/agenda.html?partnerId=' + window.PmeEngineV2.getPartnerId(), '_blank')">
                                             <i data-lucide="external-link"></i> Abrir Agenda
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- CARD PEDIDOS CONFIRMADOS -->
+                            <div class="knowledge-card" id="cardPedidosConfirmados" style="padding: 1.25rem 1.5rem; grid-column: 1 / -1; margin-top: 1rem;">
+                                <div style="display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; flex-wrap: wrap;">
+                                    <div style="display: flex; gap: 1rem; align-items: flex-start;">
+                                        <div class="k-icon" style="margin-bottom: 0;"><i data-lucide="shopping-cart"></i></div>
+                                        <div>
+                                            <div style="display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.25rem;">
+                                                <h4 style="font-size: 1rem; font-weight: 700; color: var(--text-main); margin: 0;">Pedidos Confirmados</h4>
+                                            </div>
+                                            <p style="font-size: 0.8rem; color: var(--text-muted); margin: 0;">Visualize de forma interativa a lista dos pedidos confirmados organizados por dia.</p>
+                                        </div>
+                                    </div>
+                                    <div style="display: flex; align-items: center; gap: 0.5rem;">
+                                        <button type="button" class="exec-action-btn primary" style="padding: 0.5rem 1.2rem; font-size: 0.85rem; display: flex; align-items: center; gap: 0.5rem;" onclick="window.open('/pedidos.html?partnerId=' + window.PmeEngineV2.getPartnerId(), '_blank')">
+                                            <i data-lucide="external-link"></i> Abrir Pedidos
                                         </button>
                                     </div>
                                 </div>

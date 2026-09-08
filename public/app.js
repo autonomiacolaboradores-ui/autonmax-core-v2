@@ -2081,6 +2081,9 @@ window.PmeEngineV2 = {
                 
                 const elCatalog = document.getElementById('v2_catalog');
                 if (elCatalog) elCatalog.value = rules.catalog || '';
+
+                const elProducts = document.getElementById('v2_products');
+                if (elProducts) elProducts.value = rules.products || '';
                 
                 const elSchedules = document.getElementById('v2_schedules');
                 if (elSchedules) elSchedules.value = rules.schedules || '';
@@ -2227,6 +2230,7 @@ window.PmeEngineV2 = {
             const storeName = document.getElementById('pmeDisplayNameInput')?.value.trim() || this.state.store_name || '';
             const prompt_instructions = document.getElementById('v2_system_prompt')?.value || '';
             const catalog = document.getElementById('v2_catalog')?.value || '';
+            const products = document.getElementById('v2_products')?.value || '';
             const schedules = document.getElementById('v2_schedules')?.value || '';
             const policies = document.getElementById('v2_policies')?.value || '';
 
@@ -2242,6 +2246,7 @@ window.PmeEngineV2 = {
                     store_name: storeName,
                     storeName: storeName,
                     catalog, 
+                    products,
                     schedules, 
                     policies,
                     logo: this.state.logo || ''

@@ -310,32 +310,18 @@ class WhatsAppDriver {
                   console.log(`[WHATSAPP_SOFT_PAUSE] Áudio em sessão pausada — contexto guardado, sem STT reply.`);
                   continue;
                 }
-                const fallback =
-                  (stt && stt.fallbackMessage) ||
-                  AudioHandler.getFallbackMessage();
-                try {
-                  const sentMsg = await this.sock.sendMessage(remoteJid, { text: fallback });
-                  if (sentMsg?.key?.id) {
-                    this.sentMsgIds.add(sentMsg.key.id);
-                    this.processedMsgIds.add(sentMsg.key.id);
-                  }
-                  console.log(`🎙️ [WHATSAPP_AUDIO] STT falhou — fallback enviado pedindo texto digitado.`);
-                } catch (sendErr) {
-                  console.warn('[WHATSAPP_AUDIO] Falha ao enviar fallback:', sendErr.message);
-                }
-                continue;
+                
+                console.log(`🎙️ [WHATSAPP_AUDIO] STT falhou — repassando falha para a LLM processar.`);
+                text = `[FALHA NA TRANSCRIÇÃO DE ÁUDIO. O cliente enviou um áudio, mas o sistema não conseguiu processar. Diga EXATAMENTE: "Não pude processar seu áudio no momento, poderia digitar por favor?"]`;
               }
             } catch (err) {
               console.warn(`[WHATSAPP_AUDIO] Erro crítico ao processar áudio: ${err.message}`);
               if (!this.isSessionPaused(remoteJid) && this.sock) {
-                try {
-                  const AudioHandler = require('./AudioHandler');
-                  await this.sock.sendMessage(remoteJid, {
-                    text: AudioHandler.getFallbackMessage()
-                  });
-                } catch (_) {}
+                console.log(`🎙️ [WHATSAPP_AUDIO] Erro crítico STT — repassando falha para a LLM processar.`);
+                text = `[FALHA NA TRANSCRIÇÃO DE ÁUDIO. O cliente enviou um áudio, mas o sistema não conseguiu processar. Diga EXATAMENTE: "Não pude processar seu áudio no momento, poderia digitar por favor?"]`;
+              } else {
+                continue;
               }
-              continue;
             }
           }
 
@@ -383,6 +369,14 @@ class WhatsAppDriver {
                   const arr = [...this.recentSentTexts].slice(-100);
                   this.recentSentTexts = new Set(arr);
                 }
+
+                // Simulate typing delay for realism, especially for audio or fast Groq responses
+                try {
+                  await this.sock.sendPresenceUpdate('composing', remoteJid);
+                  const delayMs = Math.min(Math.max(aiReply.length * 25, 2000), 6000); 
+                  await new Promise(r => setTimeout(r, delayMs));
+                  await this.sock.sendPresenceUpdate('paused', remoteJid);
+                } catch (_) {}
 
                 const sentMsg = await this.sock.sendMessage(remoteJid, { text: aiReply });
 

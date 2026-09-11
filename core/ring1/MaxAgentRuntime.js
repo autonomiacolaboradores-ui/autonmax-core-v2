@@ -431,7 +431,7 @@ class MaxAgentRuntime {
     let residual = t
       .replace(/(?:^|\P{L})(?:para|pra|pro|em|de|no|na)\s+(?:amanh[aã]|hoje|ontem)(?:\P{L}|$)/giu, ' ')
       .replace(/(?:^|\P{L})(?:amanh[aã]|hoje|ontem)(?:\P{L}|$)/giu, ' ')
-      .replace(/(?:^|\P{L})(?:segunda|ter[cç]a|quarta|quinta|sexta|s[aá]bado|domingo)(?:-feira)?(?:\P{L}|$)/giu, ' ')
+      .replace(/(?:^|\P{L})(?:segunda|ter[cç]a|quarta|quinta|sexta|s[áa]bado|domingo)(?:-feira)?(?:\P{L}|$)/giu, ' ')
       .replace(/(?:^|\P{L})(?:[aà]s\s+)?\d{1,2}(?::\d{2}|h\d{0,2})?\s*(?:da\s+(?:manh[aã]|tarde|noite)|horas?)?(?:\P{L}|$)/giu, ' ')
       .replace(/(?:^|\P{L})de\s+(?:manh[aã]|tarde|noite)(?:\P{L}|$)/giu, ' ')
       .replace(/\s{2,}/g, ' ')
@@ -692,32 +692,46 @@ class MaxAgentRuntime {
    */
   classifyPmeMulti(text) {
     const intents = [];
-    const order = ['order', 'pricing', 'catalog', 'booking', 'cancel', 'hours', 'policies', 'location', 'duration', 'thanks', 'greeting'];
+    const m = String(text || '').toLowerCase();
+    
     // R1.7: normalizar gírias e regionalismos ANTES do classify
-    const rawText = String(text || '');
-    let t = rawText;
+    let t = m;
     if (this.edge && this.edge.regional) {
-      const norm = this.edge.regional.normalize(rawText);
+      const norm = this.edge.regional.normalize(text || '');
       if (norm.regionalHits.length > 0) {
-        t = norm.text;
+        t = norm.text.toLowerCase();
       }
     }
-    const checks = {
-      order: /\b(comprar|fazer pedido|quero comprar|quero pedir|produto|unidades)\b/i,
-      pricing: /\b(pre[cç]o|valor|quanto custa|tabela|or[cç]amento|r\$)\b/i,
-      catalog: /\b(servi[cç]os?|cat[aá]logo|card[aá]pio|o que (voc[eê]s?|vc) (faz|oferece))\b/i,
-      booking: /\b(agendar|marcar|hor[aá]rio dispon|vaga|reservar|quando posso|quero agendar)\b/i,
-      cancel: /\b(cancelar|desmarcar)\b/i,
-      hours: /\b(hor[aá]rio de funcionamento|funcionamento|que hora (abre|fecha)|voc[eê]s? abrem)\b/i,
-      policies: /\b(pol[ií]tica|forma de pagamento)\b/i,
-      location: /\b(onde (fica|voc[eê]s?)|endere[cç]o|como chegar)\b/i,
-      duration: /\b(demora|quanto tempo|dura[cç][aã]o)\b/i,
-      thanks: /\b(obrigad|valeu)\b/i,
-      greeting: /^(oi|ol[aá]|bom dia|boa tarde|boa noite)\b/i
-    };
-    for (const k of order) {
-      if (checks[k] && checks[k].test(t)) intents.push(k);
+
+    if (/\b(quanto custa|preço|preco|valor|tabela|or[cç]amento|r\$)\b/i.test(t)) intents.push('pricing');
+    if (/\b(quais servi[çc]os|cat[áa]logo|op[çc][õo]es|menu|card[áa]pio|servi[cç]os?|o que (voc[eê]s?|vc) (faz|oferece))\b/i.test(t)) intents.push('catalog');
+    if (/\b(hor[áa]rio|funcionamento|que horas abre|que horas fecha|hor[aá]rio de funcionamento|que horas|que hora (abre|fecha)|voc[eê]s? abrem|voc[eê]s? fecham)\b/i.test(t)) intents.push('hours');
+    if (/\b(pol[íi]tica|pagamento|aceita cart[ãa]o|pix|forma de pagamento|cancelamento)\b/i.test(t)) intents.push('policies');
+    if (/\b(onde fica|endere[çc]o|localiza[çc][ãa]o|onde (fica|voc[eê]s? (ficam|s[aã]o))|como chegar)\b/i.test(t)) intents.push('location');
+    if (/\b(quanto tempo demora|dura[çc][ãa]o|demora|quanto tempo)\b/i.test(t)) intents.push('duration');
+    if (/\b(obrigado|vlw|agrade[çc]o|perfeito|obrigad|valeu|thanks)\b/i.test(t)) intents.push('thanks');
+    if (/^(ol[áa]|oi|bom dia|boa tarde|boa noite)/i.test(t.trim())) intents.push('greeting');
+    if (/\b(cancelar|desmarcar|desistir)\b/i.test(t)) intents.push('cancel');
+    if (/\b(comprar|pedido|pedir|entregar|delivery|1x|unidade|unidades)\b/i.test(t)) intents.push('order');
+
+    const productCatalog = this._getPartnerProductsCatalog ? this._getPartnerProductsCatalog(getContext().partnerId || 'default') : [];
+    let forceOrder = false;
+    for (const p of productCatalog) {
+      if (p.name && t.includes(p.name.toLowerCase())) {
+         forceOrder = true;
+         break;
+      }
     }
+    if (forceOrder) {
+       if (!intents.includes('order')) intents.push('order');
+    }
+
+    if (/\b(agendar|marcar|hora|hor[áa]rio|quero ir|amanh[ãa]|hoje|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|hor[aá]rio dispon|vaga|reservar|quando posso|quero agendar)\b/i.test(t)) {
+      if (!intents.includes('order')) {
+        intents.push('booking');
+      }
+    }
+
     if (!intents.length) intents.push('general');
     return intents.slice(0, 3);
   }
@@ -753,7 +767,7 @@ class MaxAgentRuntime {
       if (existingOrderDraft || tempIntents.includes('order')) {
         let draft = existingOrderDraft || { stage: 'order_draft', items: [] };
 
-        if (/\\b(desistir|esquece|cancela|cancelar)\\b/i.test(userMessage)) {
+        if (/\b(desistir|esquece|cancela|cancelar)\b/i.test(userMessage)) {
            this._clearOrderDraft(pid, uid);
         } else {
            let name = this.extractClientName(userMessage, { requireExplicitIntro: !!draft.clientName }) || draft.clientName;
@@ -763,7 +777,17 @@ class MaxAgentRuntime {
              name = null;
            }
            draft.clientName = name || cleanPushName || 'Cliente';
-           draft.customerPhone = uid.includes('@') ? uid.split('@')[0] : uid;
+           
+           let rawPhone = uid.includes('@') ? uid.split('@')[0] : uid;
+           let formattedPhone = rawPhone;
+           if (rawPhone.startsWith('55') && rawPhone.length >= 12) {
+               formattedPhone = rawPhone.substring(2, 4) + ' ' + rawPhone.substring(4);
+           }
+           draft.customerPhone = formattedPhone;
+
+           if (!isConfirming && draft.stage === 'order_review' && userMessage.length > 3 && !/^\s*(ok|tá|ta|beleza|joia)\s*$/i.test(userMessage)) {
+               draft.collectedInfo = (draft.collectedInfo ? draft.collectedInfo + ' | ' : '') + userMessage;
+           }
 
            console.log(`[ORDER_FLOW] Analisando pedido de: ${draft.clientName} / ${draft.customerPhone}`);
 
@@ -789,6 +813,15 @@ class MaxAgentRuntime {
                  newItems.push({ quantity, productName: resolved.name, productId: resolved.id, priceCents: resolved.priceCents });
                } else {
                  newItems.push({ quantity, productName: prod }); // store raw if not resolved
+               }
+             }
+           }
+
+           // Add mentioned products without explicit quantities (default to 1)
+           for (const p of productCatalog) {
+             if (userMessage.toLowerCase().includes(p.name.toLowerCase())) {
+               if (!newItems.some(i => i.productName.toLowerCase() === p.name.toLowerCase() || i.productId === p.id)) {
+                 newItems.push({ quantity: 1, productName: p.name, productId: p.id, priceCents: p.priceCents });
                }
              }
            }
@@ -836,6 +869,8 @@ class MaxAgentRuntime {
                   clientName: draft.clientName,
                   customerPhone: draft.customerPhone,
                   items: itemsResolved,
+                  address: draft.collectedInfo || 'Capturado no chat',
+                  paymentMethod: draft.collectedInfo || 'Capturado no chat',
                   confirmed: true
                 }, pid);
 
@@ -855,7 +890,10 @@ class MaxAgentRuntime {
                   facts: [
                     `PEDIDO PRONTO PARA CONFIRMAR.`,
                     `Resumo do pedido: ${itemsList}.`,
-                    `Mostre um resumo claro para o cliente (produtos e quantidades) e peça confirmação explícita (SIM).`
+                    `O nome do cliente (${draft.clientName}) já foi identificado pelo WhatsApp.`,
+                    `Mostre um resumo claro para o cliente (produtos e quantidades), peça o endereço completo para entrega, a forma de pagamento e a confirmação do pedido (SIM).`,
+                    `ATENÇÃO: Você está vendendo um PRODUTO (Pedido de loja). NÃO Diga que vai agendar. NÃO mencione datas ou agenda.`,
+                    `PROIBIDO: Não pergunte nome completo (já identificamos). Apenas pegue o endereço, a forma de pagamento e confirme.`
                   ],
                   toolResults: [],
                   mode: 'pme'
@@ -869,7 +907,10 @@ class MaxAgentRuntime {
                facts: [
                  `ESTADO: order_draft.`,
                  `O cliente demonstrou interesse em fazer um pedido, mas não identificou os produtos e quantidades (ex: "1 camiseta").`,
-                 `Pergunte gentilmente quais produtos e quantidades ele deseja adicionar ao pedido.`
+                 `O nome do cliente (${draft.clientName}) já foi identificado pelo WhatsApp.`,
+                 `Pergunte gentilmente quais produtos e quantidades ele deseja adicionar ao pedido. Se ele já escolheu tudo, peça o endereço de entrega e a forma de pagamento.`,
+                 `ATENÇÃO: Você está vendendo um PRODUTO (Pedido de loja). NÃO Diga que vai agendar. NÃO mencione datas ou agenda. Apenas foque em anotar o pedido, endereço e pagamento.`,
+                 `PROIBIDO: Não pergunte nome completo (já identificamos).`
                ],
                toolResults: [],
                mode: 'pme'

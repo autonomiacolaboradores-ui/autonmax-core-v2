@@ -7,7 +7,7 @@
  */
 
 const FALLBACK_PT =
-  'Desculpe, não consegui entender o áudio agora. Pode digitar sua mensagem em texto, por favor? Assim eu te atendo rapidinho 😊';
+  'Não pude processar seu áudio no momento, poderia digitar por favor?';
 
 class AudioHandler {
   /**

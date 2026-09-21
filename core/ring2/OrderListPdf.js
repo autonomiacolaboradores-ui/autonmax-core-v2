@@ -53,7 +53,16 @@ class OrderListPdf {
         : 'Cliente';
 
       if (order.customerPhone) {
-        const phone = String(order.customerPhone).split('@')[0];
+        let phone = String(order.customerPhone).split('@')[0];
+        phone = phone.replace(/\D/g, '');
+        if (phone.startsWith('55') && phone.length >= 12) {
+          phone = phone.substring(2);
+        }
+        if (phone.length === 11) {
+          phone = `${phone.substring(0, 2)} ${phone.substring(2)}`;
+        } else if (phone.length === 10) {
+          phone = `${phone.substring(0, 2)} ${phone.substring(2)}`;
+        }
         safeClient += ` (${phone})`;
       }
 

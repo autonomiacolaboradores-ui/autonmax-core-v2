@@ -79,6 +79,9 @@ class HttpServer {
     if (typeof PmeBookingTools.setRuntime === 'function') PmeBookingTools.setRuntime(this.runtime);
     if (typeof PmeBookingTools.setConfigurator === 'function') PmeBookingTools.setConfigurator(this.pmeConfigurator);
 
+    const PmeOrderTools = require('./PmeOrderTools');
+    if (typeof PmeOrderTools.setConfigurator === 'function') PmeOrderTools.setConfigurator(this.pmeConfigurator);
+
     this.runtimeExcellence = getRuntimeExcellence();
     this.pdfEngine = new PdfGeneratorEngine();
     this.llmRouter = new MultiProviderLlmRouter();

@@ -117,6 +117,13 @@ class MaxAgentRuntime {
     this.authManager = options.authManager || null;
     this.memoryRoot = options.memoryRoot || MEMORY_ROOT;
     this.excellence = options.excellence || getRuntimeExcellence();
+
+    // Setup configurators for tools
+    const PmeBookingTools = require('../ring2/PmeBookingTools');
+    if (typeof PmeBookingTools.setConfigurator === 'function') PmeBookingTools.setConfigurator(this.pme);
+    
+    const PmeOrderTools = require('../ring2/PmeOrderTools');
+    if (typeof PmeOrderTools.setConfigurator === 'function') PmeOrderTools.setConfigurator(this.pme);
     // Edge Intelligence singleton (R1.7)
     this.edge = options.edge || (_getEdgeIntelligence ? _getEdgeIntelligence() : null);
     ensureDir(this.memoryRoot);

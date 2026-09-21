@@ -711,6 +711,7 @@ ${pdfsStr}
     const newApp = {
       id: appointment.id || `app_${Date.now()}`,
       clientName: appointment.clientName || 'Cliente WhatsApp',
+      customerPhone: appointment.customerPhone || null,
       serviceName: appointment.serviceName || 'Atendimento Geral',
       dateStr: appointment.dateStr || new Date().toISOString().split('T')[0],
       timeSlot: appointment.timeSlot || '14:00',

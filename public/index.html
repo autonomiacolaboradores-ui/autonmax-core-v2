@@ -75,7 +75,10 @@
             <!-- TABS DE NAVEGAÇÃO PRINCIPAL DESKTOP (MÁX 5 ITENS) -->
             <nav class="top-nav-tabs" id="mainNavTabs">
                 <button class="nav-tab-btn active" id="tabBtnAttendant" onclick="goToEmpresaMode()">
-                    <i data-lucide="bot"></i> <span>Modo Empresa</span>
+                    <i data-lucide="settings"></i> <span>Painel de Configurações</span>
+                </button>
+                <button class="nav-tab-btn" id="tabBtnChats" onclick="goToChatsMode()">
+                    <i data-lucide="message-square"></i> <span>Atendimentos Ativos</span>
                 </button>
             </nav>
 
@@ -331,6 +334,22 @@
 
                 </div>
 
+            </div>
+
+            <!-- VISTA 6: PAINEL DE CONTROLE DE ATENDIMENTOS -->
+            <div class="attendant-view-pane pme-only-item" id="viewChats" style="display: none;">
+                <div class="attendant-header-banner">
+                    <h2 class="attendant-title">Controle de Atendimentos</h2>
+                    <p class="attendant-subtitle" style="font-size: 0.95rem; color: #FFFFFF; font-weight: 500; margin-top: 6px; text-shadow: 0 0 8px rgba(255, 255, 255, 0.25);">Monitore e assuma conversas em andamento pelo WhatsApp.</p>
+                </div>
+                
+                <div class="attendant-configured-container" style="padding-top: 24px;">
+                    <div id="chatsGrid" class="max-executive-actions-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px;">
+                        <!-- Cards injetados via JS -->
+                        <div style="color: #aaa; text-align: center; grid-column: 1 / -1; padding: 40px;">Carregando conversas ativas...</div>
+                    </div>
+                </div>
+                <audio id="alertSound" src="data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=" preload="auto"></audio>
             </div>
 
         </main>

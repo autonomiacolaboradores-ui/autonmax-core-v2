@@ -2102,3 +2102,76 @@ button.primary-action:active {
   backdrop-filter: blur(12px);
   border: 1px solid var(--border-blue-subtle);
 }
+/* --- ATENDIMENTOS DASHBOARD STYLES --- */
+.chat-card {
+    background: rgba(20, 24, 34, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 12px;
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    backdrop-filter: blur(8px);
+}
+.chat-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.1);
+    padding-bottom: 8px;
+}
+.chat-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+}
+.chat-dot.green { background: #34c759; box-shadow: 0 0 8px #34c759; }
+.chat-dot.yellow { background: #ffcc00; box-shadow: 0 0 8px #ffcc00; }
+.chat-dot.red-pulsing {
+    background: #ff3b30;
+    box-shadow: 0 0 8px #ff3b30;
+    animation: pulseRed 1s infinite;
+}
+@keyframes pulseRed {
+    0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.7); }
+    70% { transform: scale(1.1); box-shadow: 0 0 0 10px rgba(255, 59, 48, 0); }
+    100% { transform: scale(1); box-shadow: 0 0 0 0 rgba(255, 59, 48, 0); }
+}
+.chat-name {
+    font-weight: 600;
+    color: #fff;
+    font-size: 1rem;
+}
+.chat-time {
+    margin-left: auto;
+    font-size: 0.8rem;
+    color: #888;
+}
+.chat-last-msg {
+    font-size: 0.9rem;
+    color: #ccc;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.chat-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 4px;
+}
+.chat-actions button {
+    flex: 1;
+    padding: 8px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-weight: 600;
+    font-size: 0.85rem;
+    transition: 0.2s;
+}
+.btn-pause { background: rgba(255,255,255,0.1); color: #fff; }
+.btn-pause:hover { background: rgba(255,255,255,0.2); }
+.btn-resume { background: rgba(52, 199, 89, 0.2); color: #34c759; border: 1px solid rgba(52, 199, 89, 0.5); }
+.btn-resume:hover { background: rgba(52, 199, 89, 0.3); }
+.btn-resolve { background: rgba(255, 59, 48, 0.2); color: #ff3b30; border: 1px solid rgba(255, 59, 48, 0.5); }
+.btn-resolve:hover { background: rgba(255, 59, 48, 0.3); }

@@ -1357,6 +1357,67 @@ Responda APENAS com o JSON válido, sem markdown e sem blocos \`\`\`.`;
             }
         }
 
+        // 7. Active Chats endpoints
+        const chatsRouteMatch = pathname.match(/^\/api(?:\/v1)?\/pme\/([^\/]+)\/active-chats$/);
+        if (req.method === 'GET' && chatsRouteMatch) {
+            try {
+                const partnerId = chatsRouteMatch[1];
+                const _sharedConfigurator = require('./PmeAgentConfigurator');
+                const config = _sharedConfigurator.getAttendantConfig(partnerId);
+                const chats = config.activeChats ? Object.values(config.activeChats) : [];
+                // Sort by lastMessageAt descending
+                chats.sort((a, b) => new Date(b.lastMessageAt) - new Date(a.lastMessageAt));
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ status: 'SUCCESS', activeChats: chats }));
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ status: 'ERROR', error: err.message }));
+            }
+        }
+        
+        const chatPauseRouteMatch = pathname.match(/^\/api(?:\/v1)?\/pme\/([^\/]+)\/active-chats\/pause$/);
+        if (req.method === 'POST' && chatPauseRouteMatch) {
+            try {
+                const partnerId = chatPauseRouteMatch[1];
+                const body = await parseJsonBody(req);
+                const _sharedConfigurator = require('./PmeAgentConfigurator');
+                const config = _sharedConfigurator.getAttendantConfig(partnerId);
+                
+                if (config.activeChats && config.activeChats[body.userKey]) {
+                    config.activeChats[body.userKey].isPaused = !!body.isPaused;
+                    if (!body.isPaused) {
+                        config.activeChats[body.userKey].humanRequested = false;
+                    }
+                    _sharedConfigurator.saveData();
+                }
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ status: 'SUCCESS' }));
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ status: 'ERROR', error: err.message }));
+            }
+        }
+        
+        const chatResolveRouteMatch = pathname.match(/^\/api(?:\/v1)?\/pme\/([^\/]+)\/active-chats\/resolve$/);
+        if (req.method === 'POST' && chatResolveRouteMatch) {
+            try {
+                const partnerId = chatResolveRouteMatch[1];
+                const body = await parseJsonBody(req);
+                const _sharedConfigurator = require('./PmeAgentConfigurator');
+                const config = _sharedConfigurator.getAttendantConfig(partnerId);
+                
+                if (config.activeChats && config.activeChats[body.userKey]) {
+                    config.activeChats[body.userKey].humanRequested = false;
+                    _sharedConfigurator.saveData();
+                }
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ status: 'SUCCESS' }));
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ status: 'ERROR', error: err.message }));
+            }
+        }
+
         // RFC 006-BIS: GET & POST /api/v1/partner/attendant/config
         if (pathname === '/api/v1/partner/attendant/config' || pathname === '/api/v1/merchant/attendant-config') {
           const sessionToken = req.headers['x-session-token'];

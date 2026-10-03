@@ -221,11 +221,17 @@ window.startAppJourney = startAppJourney;
 window.skipSplashIntro = skipSplashIntro;
 window.switchMainView = switchMainView;
 
-// Botão "Modo Empresa" sempre visível — decide o fluxo conforme estado do usuário
+// Botão "Painel de Configurações" sempre visível — decide o fluxo conforme estado do usuário
 function goToEmpresaMode() {
+    document.querySelectorAll('.tab-section, .attendant-view-pane').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.nav-tab-btn').forEach(btn => btn.classList.remove('active'));
+    const btnAtt = document.getElementById('tabBtnAttendant');
+    if(btnAtt) btnAtt.classList.add('active');
+
     const isParceiro = (typeof isPmeAuthenticated !== 'undefined' && isPmeAuthenticated) ||
                        (userAccount && userAccount.is_partner);
     if (isParceiro) {
+        document.getElementById('viewAttendant').style.display = 'block';
         switchMainView('ATTENDANT');
     } else {
         openPartnerAuthModal();
@@ -2402,3 +2408,133 @@ window.downloadLocalAppointmentsPdf = async () => {
         }
     }
 };
+// --- ATENDIMENTOS DASHBOARD JS ---
+let chatPollInterval = null;
+let alertedChats = new Set();
+
+window.goToChatsMode = function() {
+    document.querySelectorAll('.tab-section, .attendant-view-pane').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.nav-tab-btn').forEach(btn => btn.classList.remove('active'));
+    
+    document.getElementById('viewChats').style.display = 'block';
+    document.getElementById('tabBtnChats').classList.add('active');
+    
+    fetchActiveChats();
+    if (!chatPollInterval) {
+        chatPollInterval = setInterval(fetchActiveChats, 5000);
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.nav-tab-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            if (e.currentTarget.id !== 'tabBtnChats') {
+                if (chatPollInterval) {
+                    clearInterval(chatPollInterval);
+                    chatPollInterval = null;
+                }
+            }
+        });
+    });
+});
+
+async function fetchActiveChats() {
+    try {
+        const partnerId = window._session ? window._session.partnerId : 'default';
+        const res = await fetch('/api/v1/pme/' + partnerId + '/active-chats');
+        const data = await res.json();
+        if (data.status === 'SUCCESS') {
+            renderChats(data.activeChats || []);
+        }
+    } catch (e) {
+        console.error('Error fetching chats:', e);
+    }
+}
+
+function renderChats(chats) {
+    const grid = document.getElementById('chatsGrid');
+    if (!grid) return;
+    
+    if (chats.length === 0) {
+        grid.innerHTML = '<div style="color: #aaa; text-align: center; grid-column: 1 / -1; padding: 40px;">Nenhuma conversa ativa no momento.</div>';
+        return;
+    }
+    
+    grid.innerHTML = '';
+    
+    let shouldPlaySound = false;
+    
+    chats.forEach(chat => {
+        const div = document.createElement('div');
+        div.className = 'chat-card';
+        
+        let dotClass = chat.isPaused ? (chat.humanRequested ? 'red-pulsing' : 'yellow') : 'green';
+        
+        if (chat.humanRequested && !alertedChats.has(chat.userKey)) {
+            shouldPlaySound = true;
+            alertedChats.add(chat.userKey);
+        } else if (!chat.humanRequested) {
+            alertedChats.delete(chat.userKey);
+        }
+        
+        const timeStr = new Date(chat.lastMessageAt).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+        const cleanMsg = (chat.lastMessage || '').replace(/"/g, '&quot;');
+        
+        let resolveBtn = '';
+        if (chat.humanRequested) {
+            resolveBtn = '<button class="btn-resolve" onclick="resolveChatAlert(\'' + chat.userKey + '\')">Concluir Alerta</button>';
+        }
+        
+        div.innerHTML = `
+            <div class="chat-header">
+                <div class="chat-dot ${dotClass}"></div>
+                <span class="chat-name">${chat.clientName}</span>
+                <span class="chat-time">${timeStr}</span>
+            </div>
+            <div class="chat-last-msg" title="${cleanMsg}">${cleanMsg}</div>
+            <div class="chat-actions">
+                <button class="${chat.isPaused ? 'btn-resume' : 'btn-pause'}" onclick="togglePauseChat('${chat.userKey}', ${!chat.isPaused})">
+                    ${chat.isPaused ? '▶ Retomar IA' : '⏸ Pausar IA'}
+                </button>
+                ${resolveBtn}
+            </div>
+        `;
+        grid.appendChild(div);
+    });
+    
+    if (shouldPlaySound) {
+        const audio = document.getElementById('alertSound');
+        if (audio) {
+            audio.play().catch(e => console.log('Audio autoplay prevented'));
+        }
+    }
+}
+
+window.togglePauseChat = async function(userKey, isPaused) {
+    try {
+        const partnerId = window._session ? window._session.partnerId : 'default';
+        await fetch('/api/v1/pme/' + partnerId + '/active-chats/pause', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ userKey, isPaused })
+        });
+        fetchActiveChats(); 
+    } catch (e) {
+        console.error(e);
+    }
+}
+
+window.resolveChatAlert = async function(userKey) {
+    try {
+        const partnerId = window._session ? window._session.partnerId : 'default';
+        await fetch('/api/v1/pme/' + partnerId + '/active-chats/resolve', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ userKey })
+        });
+        alertedChats.delete(userKey);
+        fetchActiveChats();
+    } catch (e) {
+        console.error(e);
+    }
+}

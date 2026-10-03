@@ -317,6 +317,7 @@ class PmeAgentConfigurator {
         startTime: '09:00',
         endTime: '18:00'
       },
+      activeChats: {},
       existingAppointments: [],
       policies: {
         cancellationPolicy: 'Nenhuma política cadastrada.',

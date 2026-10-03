@@ -719,7 +719,7 @@ class MaxAgentRuntime {
     if (/\b(obrigado|vlw|agrade[çc]o|perfeito|obrigad|valeu|thanks)\b/i.test(t)) intents.push('thanks');
     if (/^(ol[áa]|oi|bom dia|boa tarde|boa noite)/i.test(t.trim())) intents.push('greeting');
     if (/\b(cancelar|desmarcar|desistir)\b/i.test(t)) intents.push('cancel');
-    if (/\b(comprar|pedido|pedir|entregar|delivery|1x|unidade|unidades)\b/i.test(t)) intents.push('order');
+    if (/\b(comprar|pedido|pedir|entregar|entrega|delivery|1x|unidade|unidades|lanche|pizza|produto|quero um|quero uma)\b/i.test(t)) intents.push('order');
 
     const productCatalog = this._getPartnerProductsCatalog ? this._getPartnerProductsCatalog(getContext().partnerId || 'default') : [];
     let forceOrder = false;
@@ -736,6 +736,20 @@ class MaxAgentRuntime {
     if (/\b(agendar|marcar|hora|hor[áa]rio|quero ir|amanh[ãa]|hoje|segunda|ter[çc]a|quarta|quinta|sexta|s[áa]bado|domingo|hor[aá]rio dispon|vaga|reservar|quando posso|quero agendar)\b/i.test(t)) {
       if (!intents.includes('order')) {
         intents.push('booking');
+      }
+    }
+
+    // --- CORREÇÃO: Isolamento por Catálogo ---
+    // Se o parceiro tem produtos mas NÃO tem serviços, NUNCA permitir intenção de booking.
+    const serviceCatalog = this._getPartnerCatalog ? this._getPartnerCatalog(getContext().partnerId || 'default') : [];
+    const hasProducts = productCatalog && productCatalog.length > 0;
+    const hasServices = serviceCatalog && serviceCatalog.length > 0;
+
+    if (hasProducts && !hasServices) {
+      const bIdx = intents.indexOf('booking');
+      if (bIdx !== -1) {
+        intents.splice(bIdx, 1);
+        if (!intents.includes('order')) intents.push('order'); // converte datas para observações de pedido
       }
     }
 
@@ -758,9 +772,53 @@ class MaxAgentRuntime {
 
       console.log(`[PROCESS_TURN] {"mode":"${m}","partnerId":"${pid}","userKey":"${uid}"}`);
 
+      // --- SMART HANDOFF / ACTIVE CHATS TRACKING ---
+      const _sharedConfigurator = require('./PmeAgentConfigurator');
+      const config = _sharedConfigurator.getAttendantConfig(pid);
+      if (!config.activeChats) config.activeChats = {};
+      
+      let clientName = uid;
+      if (typeof pushName === 'string' && pushName.trim().length >= 2) {
+        clientName = pushName.trim();
+      }
+      
+      if (!config.activeChats[uid]) {
+        config.activeChats[uid] = { 
+          userKey: uid, 
+          clientName: clientName, 
+          isPaused: false, 
+          humanRequested: false, 
+          lastMessageAt: new Date().toISOString(),
+          lastMessage: ''
+        };
+      }
+      
+      // Update last message and time
+      config.activeChats[uid].lastMessage = userMessage;
+      config.activeChats[uid].lastMessageAt = new Date().toISOString();
+      if (clientName !== uid && config.activeChats[uid].clientName === uid) {
+        config.activeChats[uid].clientName = clientName;
+      }
+      
+      // If paused, AI ignores the message
+      if (config.activeChats[uid].isPaused) {
+        _sharedConfigurator.saveData();
+        return null;
+      }
+      
+      // Check if user is requesting human
+      const wantsHuman = /\b(atendente|humano|falar com pessoa|atendimento humano|suporte|problema|reclamação|falar com algu[ée]m)\b/i.test(userMessage);
+      if (wantsHuman) {
+        config.activeChats[uid].isPaused = true;
+        config.activeChats[uid].humanRequested = true;
+        _sharedConfigurator.saveData();
+        return "Compreendi. Vou pausar meu atendimento automático e notificar nossa equipe. Um de nossos atendentes humanos já vai falar com você, aguarde um instante!";
+      }
+      // ---------------------------------------------
+
       try {
         if (this.edge && this.edge.reactivation) {
-          this.edge.reactivation.touch(pid, uid, this.extractClientName(userMessage));
+          this.edge.reactivation.touch(pid, uid, this.extractClientName(userMessage) || clientName);
         }
       } catch (_) {}
 
@@ -1009,10 +1067,25 @@ class MaxAgentRuntime {
         const catalogForCommit = partnerCatalog || this._getPartnerCatalog(pid) || [];
 
         if (!catalogForCommit || catalogForCommit.length === 0) {
-          // Catálogo vazio → força serviço genérico e registra warning
-          console.warn(`[PME_BOOKING] Catálogo vazio para partner. Forçando "Serviço Genérico"`);
-          draft.serviceName = 'Serviço Genérico';
-          draft.serviceId = 'generic';
+          const hasProducts = this._getPartnerProductsCatalog(pid) && this._getPartnerProductsCatalog(pid).length > 0;
+          if (hasProducts) {
+            // Hard fail: Este parceiro vende produtos, não agenda serviços.
+            this._clearDraft(pid, uid);
+            return {
+              intent: 'general',
+              facts: [
+                'Este estabelecimento trabalha apenas com pedidos/compras, e não realiza agendamentos de horários de serviço.',
+                'Por favor, direcione o cliente para o catálogo de produtos e peça para informar a data/horário de entrega como uma observação no pedido.'
+              ],
+              toolResults: [],
+              mode: 'pme'
+            };
+          } else {
+            // Catálogo vazio → força serviço genérico e registra warning (comportamento original para parceiros vazios)
+            console.warn(`[PME_BOOKING] Catálogo vazio para partner. Forçando "Serviço Genérico"`);
+            draft.serviceName = 'Serviço Genérico';
+            draft.serviceId = 'generic';
+          }
         } else {
           const PmeBookingTools = require('../ring2/PmeBookingTools');
           const resolved = PmeBookingTools.resolveService(catalogForCommit, draft.serviceName, draft.serviceId);

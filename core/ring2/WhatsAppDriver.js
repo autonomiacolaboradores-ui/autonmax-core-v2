@@ -311,14 +311,14 @@ class WhatsAppDriver {
                   continue;
                 }
                 
-                console.log(`🎙️ [WHATSAPP_AUDIO] STT falhou — repassando falha para a LLM processar.`);
-                text = `[FALHA NA TRANSCRIÇÃO DE ÁUDIO. O cliente enviou um áudio, mas o sistema não conseguiu processar. Diga EXATAMENTE: "Não pude processar seu áudio no momento, poderia digitar por favor?"]`;
+                console.log(`🎙️ [WHATSAPP_AUDIO] STT falhou — ignorando mensagem de áudio (fallback desativado).`);
+                continue;
               }
             } catch (err) {
               console.warn(`[WHATSAPP_AUDIO] Erro crítico ao processar áudio: ${err.message}`);
               if (!this.isSessionPaused(remoteJid) && this.sock) {
-                console.log(`🎙️ [WHATSAPP_AUDIO] Erro crítico STT — repassando falha para a LLM processar.`);
-                text = `[FALHA NA TRANSCRIÇÃO DE ÁUDIO. O cliente enviou um áudio, mas o sistema não conseguiu processar. Diga EXATAMENTE: "Não pude processar seu áudio no momento, poderia digitar por favor?"]`;
+                console.log(`🎙️ [WHATSAPP_AUDIO] Erro crítico STT — ignorando mensagem de áudio (fallback desativado).`);
+                continue;
               } else {
                 continue;
               }

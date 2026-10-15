@@ -231,7 +231,7 @@
                             </div>
 
                             <!-- GRUPO B: SERVIÇOS & PRODUTOS COM DASHBOARDS ESTRUTURADOS -->
-                            <div class="knowledge-card" style="padding: 1.25rem 1.5rem; display: flex; flex-direction: column; justify-content: space-between;">
+                            <div class="knowledge-card" style="padding: 1.25rem 1.5rem; display: flex; flex-direction: column; justify-content: space-between; cursor: pointer;" onclick="window.CatalogManager.openServicesDashboard()">
                                 <div>
                                     <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.75rem;">
                                         <div class="k-icon" style="margin-bottom: 0;"><i data-lucide="calendar-check-2"></i></div>
@@ -244,12 +244,12 @@
                                     </div>
                                     <textarea id="v2_catalog" style="display: none;"></textarea>
                                 </div>
-                                <button type="button" class="exec-action-btn primary" style="width: 100%; justify-content: center; margin-top: 0.5rem;" onclick="window.CatalogManager.openServicesDashboard()">
+                                <button type="button" class="exec-action-btn primary" style="width: 100%; justify-content: center; margin-top: 0.5rem;" onclick="event.stopPropagation(); window.CatalogManager.openServicesDashboard()">
                                     <i data-lucide="layers"></i> Gerenciar Serviços (Dashboard)
                                 </button>
                             </div>
 
-                            <div class="knowledge-card" style="padding: 1.25rem 1.5rem; display: flex; flex-direction: column; justify-content: space-between;">
+                            <div class="knowledge-card" style="padding: 1.25rem 1.5rem; display: flex; flex-direction: column; justify-content: space-between; cursor: pointer;" onclick="window.CatalogManager.openProductsDashboard()">
                                 <div>
                                     <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 0.75rem;">
                                         <div class="k-icon" style="margin-bottom: 0;"><i data-lucide="shopping-bag"></i></div>
@@ -262,7 +262,7 @@
                                     </div>
                                     <textarea id="v2_products" style="display: none;"></textarea>
                                 </div>
-                                <button type="button" class="exec-action-btn primary" style="width: 100%; justify-content: center; margin-top: 0.5rem;" onclick="window.CatalogManager.openProductsDashboard()">
+                                <button type="button" class="exec-action-btn primary" style="width: 100%; justify-content: center; margin-top: 0.5rem;" onclick="event.stopPropagation(); window.CatalogManager.openProductsDashboard()">
                                     <i data-lucide="package-search"></i> Gerenciar Produtos (Dashboard)
                                 </button>
                             </div>
@@ -360,7 +360,7 @@
 
             
             <!-- DASHBOARD DEDICADO: SERVIÇOS & AGENDAMENTOS -->
-            <section id="viewServicesDashboard" class="catalog-subview glass-cyber" style="display: none;">
+            <section id="viewServicesDashboard" class="attendant-view-pane catalog-subview pme-only-item" style="display: none;">
                 <div class="subview-header">
                     <button type="button" class="exec-action-btn" onclick="window.CatalogManager.closeDashboards()">
                         <i data-lucide="arrow-left"></i> Voltar ao Painel PME
@@ -393,12 +393,15 @@
                 </div>
 
                 <div id="servicesCardsGrid" class="catalog-cards-grid">
-                    <!-- Cards de serviço renderizados dinamicamente via JS -->
+                    <div style="grid-column: 1 / -1; text-align: center; padding: 3rem 1rem; color: var(--text-muted);">
+                        <i data-lucide="loader-2" style="width: 36px; height: 36px; color: #00a3ff; margin-bottom: 0.75rem; animation: spin 1s linear infinite;"></i>
+                        <p style="font-size: 0.95rem; font-weight: 600; color: var(--text-main);">Carregando catálogo de serviços...</p>
+                    </div>
                 </div>
             </section>
 
             <!-- DASHBOARD DEDICADO: PRODUTOS & PEDIDOS -->
-            <section id="viewProductsDashboard" class="catalog-subview glass-cyber" style="display: none;">
+            <section id="viewProductsDashboard" class="attendant-view-pane catalog-subview pme-only-item" style="display: none;">
                 <div class="subview-header">
                     <button type="button" class="exec-action-btn" onclick="window.CatalogManager.closeDashboards()">
                         <i data-lucide="arrow-left"></i> Voltar ao Painel PME
@@ -431,7 +434,10 @@
                 </div>
 
                 <div id="productsCardsGrid" class="catalog-cards-grid">
-                    <!-- Cards de produto renderizados dinamicamente via JS -->
+                    <div style="grid-column: 1 / -1; text-align: center; padding: 3rem 1rem; color: var(--text-muted);">
+                        <i data-lucide="loader-2" style="width: 36px; height: 36px; color: #10b981; margin-bottom: 0.75rem; animation: spin 1s linear infinite;"></i>
+                        <p style="font-size: 0.95rem; font-weight: 600; color: var(--text-main);">Carregando catálogo de produtos...</p>
+                    </div>
                 </div>
             </section>
 

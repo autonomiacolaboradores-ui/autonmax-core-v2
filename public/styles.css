@@ -2179,10 +2179,21 @@ button.primary-action:active {
 
 /* ── SUB-DASHBOARDS: SERVIÇOS & PRODUTOS (Sprint 12) ── */
 .catalog-subview {
-    padding: 2rem;
+    flex: 1;
+    overflow-y: auto;
+    scrollbar-width: thin;
+    -webkit-overflow-scrolling: touch;
+    padding: 1.5rem 1.5rem calc(var(--bottom-nav-height) + var(--safe-bottom) + 80px) 1.5rem;
     border-radius: 20px;
-    margin-top: 1.5rem;
+    margin-top: 0;
+    width: 100%;
+    max-width: 100%;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
     animation: fadeInCatalog 0.25s ease-out;
+    background: rgba(10, 15, 28, 0.4);
+    border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 @keyframes fadeInCatalog {

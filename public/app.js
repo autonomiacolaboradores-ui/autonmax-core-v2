@@ -223,7 +223,7 @@ window.switchMainView = switchMainView;
 
 // Botão "Painel de Configurações" sempre visível — decide o fluxo conforme estado do usuário
 function goToEmpresaMode() {
-    document.querySelectorAll('.tab-section, .attendant-view-pane').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.tab-section, .attendant-view-pane, .catalog-subview').forEach(el => el.style.display = 'none');
     document.querySelectorAll('.nav-tab-btn').forEach(btn => btn.classList.remove('active'));
     const btnAtt = document.getElementById('tabBtnAttendant');
     if(btnAtt) btnAtt.classList.add('active');
@@ -231,8 +231,12 @@ function goToEmpresaMode() {
     const isParceiro = (typeof isPmeAuthenticated !== 'undefined' && isPmeAuthenticated) ||
                        (userAccount && userAccount.is_partner);
     if (isParceiro) {
-        document.getElementById('viewAttendant').style.display = 'block';
+        const vAtt = document.getElementById('viewAttendant');
+        if (vAtt) vAtt.style.display = 'flex';
+        const pmeState = document.getElementById('attendantConfiguredState');
+        if (pmeState) pmeState.style.display = 'block';
         switchMainView('ATTENDANT');
+        if (window.CatalogManager) window.CatalogManager.loadAll();
     } else {
         openPartnerAuthModal();
     }
@@ -2415,7 +2419,7 @@ let chatPollInterval = null;
 let alertedChats = new Set();
 
 window.goToChatsMode = function() {
-    document.querySelectorAll('.tab-section, .attendant-view-pane').forEach(el => el.style.display = 'none');
+    document.querySelectorAll('.tab-section, .attendant-view-pane, .catalog-subview').forEach(el => el.style.display = 'none');
     document.querySelectorAll('.nav-tab-btn').forEach(btn => btn.classList.remove('active'));
     
     document.getElementById('viewChats').style.display = 'block';
@@ -2567,12 +2571,14 @@ window.CatalogManager = {
         try {
             const partnerId = this.getPartnerId();
             const res = await fetch('/api/v1/pme/' + encodeURIComponent(partnerId) + '/services');
-            if (!res.ok) return;
-            const data = await res.json();
-            this.services = Array.isArray(data.services) ? data.services : [];
-            this.updateServicesUI();
+            if (res.ok) {
+                const data = await res.json();
+                this.services = Array.isArray(data.services) ? data.services : [];
+            }
         } catch (err) {
             console.error('[CatalogManager] Erro ao carregar serviços:', err);
+        } finally {
+            this.updateServicesUI();
         }
     },
 
@@ -2590,7 +2596,7 @@ window.CatalogManager = {
         const prev = document.getElementById('pmeServicesMiniPreview');
         if (prev) {
             if (count === 0) {
-                prev.innerHTML = '<span style="color: var(--text-muted);">Nenhum serviço cadastrado ainda. Clique abaixo para começar.</span>';
+                prev.innerHTML = '<span style="color: var(--text-muted);">Nenhum serviço cadastrado ainda. Clique para abrir o painel.</span>';
             } else {
                 const active = this.services.filter(s => s.active !== false);
                 const pills = active.slice(0, 3).map(s => {
@@ -2605,9 +2611,20 @@ window.CatalogManager = {
         this.renderServicesCards();
     },
 
-    renderServicesCards() {
+    renderServicesCards(isLoading = false) {
         const grid = document.getElementById('servicesCardsGrid');
         if (!grid) return;
+
+        if (isLoading) {
+            grid.innerHTML = `
+                <div style="grid-column: 1 / -1; text-align: center; padding: 3rem 1rem; color: var(--text-muted);">
+                    <i data-lucide="loader-2" style="width: 36px; height: 36px; color: #00a3ff; margin-bottom: 0.75rem; animation: spin 1s linear infinite;"></i>
+                    <p style="font-size: 0.95rem; font-weight: 600; color: var(--text-main);">Carregando catálogo de serviços...</p>
+                </div>
+            `;
+            if (window.lucide) lucide.createIcons();
+            return;
+        }
 
         let list = this.services;
         if (this.activeFilterService) {
@@ -2682,12 +2699,14 @@ window.CatalogManager = {
         try {
             const partnerId = this.getPartnerId();
             const res = await fetch('/api/v1/pme/' + encodeURIComponent(partnerId) + '/products');
-            if (!res.ok) return;
-            const data = await res.json();
-            this.products = Array.isArray(data.products) ? data.products : [];
-            this.updateProductsUI();
+            if (res.ok) {
+                const data = await res.json();
+                this.products = Array.isArray(data.products) ? data.products : [];
+            }
         } catch (err) {
             console.error('[CatalogManager] Erro ao carregar produtos:', err);
+        } finally {
+            this.updateProductsUI();
         }
     },
 
@@ -2705,7 +2724,7 @@ window.CatalogManager = {
         const prev = document.getElementById('pmeProductsMiniPreview');
         if (prev) {
             if (count === 0) {
-                prev.innerHTML = '<span style="color: var(--text-muted);">Nenhum produto cadastrado ainda. Clique abaixo para começar.</span>';
+                prev.innerHTML = '<span style="color: var(--text-muted);">Nenhum produto cadastrado ainda. Clique para abrir o painel.</span>';
             } else {
                 const active = this.products.filter(p => p.active !== false);
                 const pills = active.slice(0, 3).map(p => {
@@ -2720,9 +2739,20 @@ window.CatalogManager = {
         this.renderProductsCards();
     },
 
-    renderProductsCards() {
+    renderProductsCards(isLoading = false) {
         const grid = document.getElementById('productsCardsGrid');
         if (!grid) return;
+
+        if (isLoading) {
+            grid.innerHTML = `
+                <div style="grid-column: 1 / -1; text-align: center; padding: 3rem 1rem; color: var(--text-muted);">
+                    <i data-lucide="loader-2" style="width: 36px; height: 36px; color: #10b981; margin-bottom: 0.75rem; animation: spin 1s linear infinite;"></i>
+                    <p style="font-size: 0.95rem; font-weight: 600; color: var(--text-main);">Carregando catálogo de produtos...</p>
+                </div>
+            `;
+            if (window.lucide) lucide.createIcons();
+            return;
+        }
 
         let list = this.products;
         if (this.activeFilterProduct) {
@@ -2794,39 +2824,75 @@ window.CatalogManager = {
 
     // ── NAVEGAÇÃO ENTRE TELAS ────────────────────────────────────────────────
     openServicesDashboard() {
+        const vAttendant = document.getElementById('viewAttendant');
         const pmeState = document.getElementById('attendantConfiguredState');
         const sView = document.getElementById('viewServicesDashboard');
         const pView = document.getElementById('viewProductsDashboard');
+        const cView = document.getElementById('viewChats');
+
+        if (vAttendant) vAttendant.style.display = 'none';
         if (pmeState) pmeState.style.display = 'none';
         if (pView) pView.style.display = 'none';
-        if (sView) sView.style.display = 'block';
+        if (cView) cView.style.display = 'none';
+
+        if (sView) {
+            sView.style.display = 'flex';
+            sView.scrollTop = 0;
+        }
+
+        if (this.services && this.services.length > 0) {
+            this.renderServicesCards();
+        } else {
+            this.renderServicesCards(true);
+        }
+
         this.loadServices();
         if (window.lucide) lucide.createIcons();
-        window.scrollTo({ top: 0, behavior: 'smooth' });
     },
 
     openProductsDashboard() {
+        const vAttendant = document.getElementById('viewAttendant');
         const pmeState = document.getElementById('attendantConfiguredState');
         const sView = document.getElementById('viewServicesDashboard');
         const pView = document.getElementById('viewProductsDashboard');
+        const cView = document.getElementById('viewChats');
+
+        if (vAttendant) vAttendant.style.display = 'none';
         if (pmeState) pmeState.style.display = 'none';
         if (sView) sView.style.display = 'none';
-        if (pView) pView.style.display = 'block';
+        if (cView) cView.style.display = 'none';
+
+        if (pView) {
+            pView.style.display = 'flex';
+            pView.scrollTop = 0;
+        }
+
+        if (this.products && this.products.length > 0) {
+            this.renderProductsCards();
+        } else {
+            this.renderProductsCards(true);
+        }
+
         this.loadProducts();
         if (window.lucide) lucide.createIcons();
-        window.scrollTo({ top: 0, behavior: 'smooth' });
     },
 
     closeDashboards() {
+        const vAttendant = document.getElementById('viewAttendant');
         const pmeState = document.getElementById('attendantConfiguredState');
         const sView = document.getElementById('viewServicesDashboard');
         const pView = document.getElementById('viewProductsDashboard');
+
         if (sView) sView.style.display = 'none';
         if (pView) pView.style.display = 'none';
+        if (vAttendant) {
+            vAttendant.style.display = 'flex';
+            vAttendant.scrollTop = 0;
+        }
         if (pmeState) pmeState.style.display = 'block';
+
         this.loadAll();
         if (window.lucide) lucide.createIcons();
-        window.scrollTo({ top: 0, behavior: 'smooth' });
     },
 
     // ── MODAL DE SERVIÇOS ────────────────────────────────────────────────────

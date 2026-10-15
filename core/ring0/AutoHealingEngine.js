@@ -78,6 +78,9 @@ class AutoHealingEngine {
   }
 
   executeStateRollback(event) {
+    if (event.ledger && typeof event.ledger.recoverDatabase === 'function') {
+      event.ledger.recoverDatabase();
+    }
     // Simulação do hard rollback via WAL Snapshot
     this.subsystemStatus.set(event.subsystem, STATUS.HEALTHY);
   }

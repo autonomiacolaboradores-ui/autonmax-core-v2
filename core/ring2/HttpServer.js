@@ -31,6 +31,31 @@ const { AppointmentListPdf } = require('./AppointmentListPdf');
 const MultiProviderLlmRouter = require('../ring1/MultiProviderLlmRouter');
 const { getSystemPrompt } = require('../ring1/SystemPrompt');
 
+
+function parseJsonBody(req, maxBytes = 2 * 1024 * 1024) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    let bytes = 0;
+    req.on('data', chunk => {
+      bytes += chunk.length;
+      if (bytes > maxBytes) {
+        req.destroy();
+        return reject(new Error('PAYLOAD_TOO_LARGE'));
+      }
+      body += chunk;
+    });
+    req.on('end', () => {
+      if (!body || body.trim() === '') return resolve({});
+      try {
+        resolve(JSON.parse(body));
+      } catch (err) {
+        reject(new Error('INVALID_JSON: ' + err.message));
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
 class HttpServer {
   constructor(options = {}) {
     // 1. CARREGAR .ENV ANTES DE QUALQUER INSTANCIAÇÃO
@@ -1357,12 +1382,119 @@ Responda APENAS com o JSON válido, sem markdown e sem blocos \`\`\`.`;
             }
         }
 
+        
+        // ── REST: Serviços (/api/v1/pme/:partnerId/services) ────────────────
+        const servicesListRoute = pathname.match(/^\/api(?:\/v1)?\/pme\/([^\/]+)\/services$/);
+        if (req.method === 'GET' && servicesListRoute) {
+            try {
+                const partnerId = servicesListRoute[1];
+                const services = this.pmeConfigurator.listServices(partnerId);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ status: 'SUCCESS', services }));
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ status: 'ERROR', error: err.message }));
+            }
+        }
+        if (req.method === 'POST' && servicesListRoute) {
+            try {
+                const partnerId = servicesListRoute[1];
+                const body = await parseJsonBody(req);
+                const result = this.pmeConfigurator.addService(partnerId, body);
+                res.writeHead(result.success ? 201 : 400, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify(result));
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ status: 'ERROR', error: err.message }));
+            }
+        }
+
+        const serviceItemRoute = pathname.match(/^\/api(?:\/v1)?\/pme\/([^\/]+)\/services\/([^\/]+)$/);
+        if (req.method === 'PUT' && serviceItemRoute) {
+            try {
+                const partnerId = serviceItemRoute[1];
+                const serviceId = serviceItemRoute[2];
+                const body = await parseJsonBody(req);
+                const result = this.pmeConfigurator.updateService(partnerId, serviceId, body);
+                res.writeHead(result.success ? 200 : 400, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify(result));
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ status: 'ERROR', error: err.message }));
+            }
+        }
+        if (req.method === 'DELETE' && serviceItemRoute) {
+            try {
+                const partnerId = serviceItemRoute[1];
+                const serviceId = serviceItemRoute[2];
+                const result = this.pmeConfigurator.deleteService(partnerId, serviceId);
+                res.writeHead(result.success ? 200 : 404, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify(result));
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ status: 'ERROR', error: err.message }));
+            }
+        }
+
+        // ── REST: Produtos (/api/v1/pme/:partnerId/products) ────────────────
+        const productsListRoute = pathname.match(/^\/api(?:\/v1)?\/pme\/([^\/]+)\/products$/);
+        if (req.method === 'GET' && productsListRoute) {
+            try {
+                const partnerId = productsListRoute[1];
+                const products = this.pmeConfigurator.listProducts(partnerId);
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ status: 'SUCCESS', products }));
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ status: 'ERROR', error: err.message }));
+            }
+        }
+        if (req.method === 'POST' && productsListRoute) {
+            try {
+                const partnerId = productsListRoute[1];
+                const body = await parseJsonBody(req);
+                const result = this.pmeConfigurator.addProduct(partnerId, body);
+                res.writeHead(result.success ? 201 : 400, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify(result));
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ status: 'ERROR', error: err.message }));
+            }
+        }
+
+        const productItemRoute = pathname.match(/^\/api(?:\/v1)?\/pme\/([^\/]+)\/products\/([^\/]+)$/);
+        if (req.method === 'PUT' && productItemRoute) {
+            try {
+                const partnerId = productItemRoute[1];
+                const productId = productItemRoute[2];
+                const body = await parseJsonBody(req);
+                const result = this.pmeConfigurator.updateProduct(partnerId, productId, body);
+                res.writeHead(result.success ? 200 : 400, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify(result));
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ status: 'ERROR', error: err.message }));
+            }
+        }
+        if (req.method === 'DELETE' && productItemRoute) {
+            try {
+                const partnerId = productItemRoute[1];
+                const productId = productItemRoute[2];
+                const result = this.pmeConfigurator.deleteProduct(partnerId, productId);
+                res.writeHead(result.success ? 200 : 404, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify(result));
+            } catch (err) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                return res.end(JSON.stringify({ status: 'ERROR', error: err.message }));
+            }
+        }
+
         // 7. Active Chats endpoints
         const chatsRouteMatch = pathname.match(/^\/api(?:\/v1)?\/pme\/([^\/]+)\/active-chats$/);
         if (req.method === 'GET' && chatsRouteMatch) {
             try {
                 const partnerId = chatsRouteMatch[1];
-                const _sharedConfigurator = require('./PmeAgentConfigurator');
+                const _sharedConfigurator = this.pmeConfigurator;
                 const config = _sharedConfigurator.getAttendantConfig(partnerId);
                 const chats = config.activeChats ? Object.values(config.activeChats) : [];
                 // Sort by lastMessageAt descending
@@ -1380,7 +1512,7 @@ Responda APENAS com o JSON válido, sem markdown e sem blocos \`\`\`.`;
             try {
                 const partnerId = chatPauseRouteMatch[1];
                 const body = await parseJsonBody(req);
-                const _sharedConfigurator = require('./PmeAgentConfigurator');
+                const _sharedConfigurator = this.pmeConfigurator;
                 const config = _sharedConfigurator.getAttendantConfig(partnerId);
                 
                 if (config.activeChats && config.activeChats[body.userKey]) {
@@ -1403,7 +1535,7 @@ Responda APENAS com o JSON válido, sem markdown e sem blocos \`\`\`.`;
             try {
                 const partnerId = chatResolveRouteMatch[1];
                 const body = await parseJsonBody(req);
-                const _sharedConfigurator = require('./PmeAgentConfigurator');
+                const _sharedConfigurator = this.pmeConfigurator;
                 const config = _sharedConfigurator.getAttendantConfig(partnerId);
                 
                 if (config.activeChats && config.activeChats[body.userKey]) {

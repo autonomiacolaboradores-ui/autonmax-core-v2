@@ -191,6 +191,18 @@ class MaxAgentRuntime {
 
   _getPartnerCatalog(partnerId) {
     try {
+      if (this.pme) {
+        const cfg = this.pme.getAttendantConfig(partnerId);
+        if (cfg && Array.isArray(cfg.services) && cfg.services.length > 0) {
+          return cfg.services;
+        }
+        if (cfg && Array.isArray(cfg.catalog) && cfg.catalog.length > 0) {
+          return cfg.catalog;
+        }
+      }
+    } catch (_) {}
+
+    try {
       const sqlitePath = path.join(__dirname, '../../workspace/autonmax.db');
       if (fs.existsSync(sqlitePath)) {
         const { DatabaseSync } = require('node:sqlite');
@@ -203,7 +215,7 @@ class MaxAgentRuntime {
             const lines = br.catalog.split('\n').map(l => l.trim()).filter(Boolean);
             const parsed = [];
             for (const line of lines) {
-              const m = line.match(/^[-•*]?\s*([A-Za-zÀ-ú0-9\s()“"”/]+?)(?:\s*[:–—-]|\s*\$|\s*R\$|\s*\d)/i);
+              const m = line.match(/^[-•*]?\s*([A-Za-zÀ-ú0-9\s()“"”/]+?)(?:\s*[:–—-]\s*|\s*\$\s*|\s*R\$\s*|\s*\d)/i);
               if (m && m[1].trim().length >= 3) {
                 parsed.push({ name: m[1].trim() });
               }
@@ -214,17 +226,19 @@ class MaxAgentRuntime {
       }
     } catch (_) {}
 
-    try {
-      const cfg = this.pme.getAttendantConfig(partnerId);
-      if (cfg && Array.isArray(cfg.catalog) && cfg.catalog.length > 0) {
-        return cfg.catalog;
-      }
-    } catch (_) {}
-
     return [];
   }
 
   _getPartnerProductsCatalog(partnerId) {
+    try {
+      if (this.pme) {
+        const cfg = this.pme.getAttendantConfig(partnerId);
+        if (cfg && Array.isArray(cfg.products) && cfg.products.length > 0) {
+          return cfg.products;
+        }
+      }
+    } catch (_) {}
+
     try {
       const sqlitePath = require('path').join(__dirname, '../../workspace/autonmax.db');
       if (require('fs').existsSync(sqlitePath)) {
@@ -330,8 +344,12 @@ class MaxAgentRuntime {
     if (/\b(n[aã]o|cancel|desistir|esquece|outro dia)\b/i.test(t) && !/\b(sim|confirma|pode)\b/i.test(t)) {
       return false;
     }
+    if (/\b(quero|gostaria de|preciso|desejo)\s+(agendar|marcar)\b/i.test(t)) {
+      return false;
+    }
     const confirmPatterns = [
-      /\b(sim|pode|ok|s|isso|exato|confirma|confirmar|confirmado|confirmo|ótimo|otimo|combinado|fechar|fecha|pode ser|tá|ta bom|tá bom|quero sim|perfeito|certo|correto|manda|vai|beleza|marca|marcar|agende|agendar)\b/i,
+      /^(sim|s|ok|isso|exato|confirmo|confirmado|confirma|pode ser|tá bom|ta bom|beleza|perfeito|certo|correto|combinado)$/i,
+      /\b(sim|pode|ok|isso|exato|confirma|confirmar|confirmado|confirmo|ótimo|otimo|combinado|fechar|fecha|pode ser|tá|ta bom|tá bom|quero sim|perfeito|certo|correto|manda|vai|beleza|pode marcar|pode agendar)\b/i,
       /\b(pode (confirmar|agendar|marcar|fechar))\b/i,
       /\b(est[aá] (certo|correto|ótimo|ok))\b/i
     ];
@@ -843,12 +861,8 @@ class MaxAgentRuntime {
            }
            draft.clientName = name || cleanPushName || 'Cliente';
            
-           let rawPhone = uid.includes('@') ? uid.split('@')[0] : uid;
-           let formattedPhone = rawPhone;
-           if (rawPhone.startsWith('55') && rawPhone.length >= 12) {
-               formattedPhone = rawPhone.substring(2, 4) + ' ' + rawPhone.substring(4);
-           }
-           draft.customerPhone = formattedPhone;
+           const BDT = require('../ring2/BookingDateTime');
+           draft.customerPhone = BDT.formatBrazilianPhone(uid);
 
            if (!isConfirming && draft.stage === 'order_review' && userMessage.length > 3 && !/^\s*(ok|tá|ta|beleza|joia)\s*$/i.test(userMessage)) {
                draft.collectedInfo = (draft.collectedInfo ? draft.collectedInfo + ' | ' : '') + userMessage;
@@ -858,6 +872,27 @@ class MaxAgentRuntime {
 
            const PmeOrderTools = require('../ring2/PmeOrderTools');
            const productCatalog = this._getPartnerProductsCatalog(pid);
+           const serviceCatalog = this._getPartnerCatalog(pid);
+
+           // ── GUARDA RIGOROSA: Interceptar se cliente pediu SERVIÇO como pedido de produto ──
+           for (const s of serviceCatalog) {
+             const sName = (s.name || '').toLowerCase().trim();
+             if (sName.length >= 3 && userMessage.toLowerCase().includes(sName)) {
+               console.log(`[ORDER_FLOW] Interceptado: cliente tentou pedir serviço "${s.name}" como produto.`);
+               this._clearOrderDraft(pid, uid);
+               return {
+                 intent: 'booking_pending',
+                 facts: [
+                   `DESAMBIGUAÇÃO PRODUTO vs SERVIÇO: O cliente mencionou "${s.name}", que é um SERVIÇO realizado com hora marcada em nossa agenda (não é produto para entrega ou venda avulsa).`,
+                   `Esclareça com cordialidade que "${s.name}" é um serviço com atendimento agendado na agenda.`,
+                   `Pergunte qual o melhor dia e período para agendar o horário de atendimento.`,
+                   `PROIBIDO: Não anote como pedido de compra ou delivery.`
+                 ],
+                 toolResults: [],
+                 mode: 'pme'
+               };
+             }
+           }
 
            // Tentar regex robusta: "2 bolo", "1 camiseta", "quero uma camiseta", "dois produtos", "1x produto"
            const regex = /(?:(\d+|um|uma|dois|duas|três|tres|quatro|cinco)\s*(?:x|unidades? de|de)?\s*)([a-zA-ZÀ-ÿ0-9\s]+?)(?:(?:\s+e\s+)|,|\.|\n|$)/gi;
@@ -889,6 +924,23 @@ class MaxAgentRuntime {
                  newItems.push({ quantity: 1, productName: p.name, productId: p.id, priceCents: p.priceCents });
                }
              }
+           }
+
+           // ── GUARDA DE DESAMBIGUAÇÃO: Cliente tentou agendar produto como serviço ──
+           const wantsScheduleProduct = /\b(agendar|marcar|hor[áa]rio|agenda|sess[ãa]o|consulta)\b/i.test(userMessage);
+           if (wantsScheduleProduct && newItems.length > 0) {
+             console.log(`[ORDER_FLOW] Interceptado: cliente tentou agendar produto "${newItems[0].productName}" como serviço.`);
+             return {
+               intent: 'order_pending',
+               facts: [
+                 `DESAMBIGUAÇÃO SERVIÇO vs PRODUTO: O cliente tentou agendar horário para o produto "${newItems[0].productName}".`,
+                 `Esclareça com cordialidade que "${newItems[0].productName}" é um produto físico para pronta entrega ou retirada na loja (não é atendimento de serviço com hora marcada).`,
+                 `Pergunte se ele deseja que façamos a entrega no endereço dele ou se prefere retirar no estabelecimento.`,
+                 `PROIBIDO: Nunca agende horário na agenda para entrega de produto físico.`
+               ],
+               toolResults: [],
+               mode: 'pme'
+             };
            }
 
            // Se achar pelo menos um produto
@@ -984,6 +1036,29 @@ class MaxAgentRuntime {
         }
       }
 
+            // ── GUARDA RIGOROSA: Interceptar se cliente tentou agendar PRODUTO como serviço ──
+      const availableProducts = this._getPartnerProductsCatalog(pid);
+      if (tempIntents.includes('booking') || existingDraft) {
+        for (const p of availableProducts) {
+          const pName = (p.name || '').toLowerCase().trim();
+          if (pName.length >= 3 && userMessage.toLowerCase().includes(pName)) {
+            console.log(`[BOOKING_FLOW] Interceptado: cliente tentou agendar produto "${p.name}" como serviço.`);
+            this._clearDraft(pid, uid);
+            return {
+              intent: 'order_pending',
+              facts: [
+                `DESAMBIGUAÇÃO SERVIÇO vs PRODUTO: O cliente mencionou "${p.name}", que é um PRODUTO FÍSICO para entrega ou retirada (não é serviço com hora marcada).`,
+                `Esclareça com cordialidade que "${p.name}" é um produto físico que temos disponível para entrega ou retirada na loja.`,
+                `Pergunte se o cliente prefere que façamos a entrega no endereço dele ou se ele prefere retirar na nossa loja.`,
+                `PROIBIDO: Nunca agende horário na agenda para entrega de produto físico.`
+              ],
+              toolResults: [],
+              mode: 'pme'
+            };
+          }
+        }
+      }
+
       // ── G1/G5: Máquina de estados de confirmação e commit de agendamento ───────
       if (existingDraft && isConfirming) {
         const lateName = this.extractClientName(userMessage, { requireExplicitIntro: !!existingDraft.clientName }) || existingDraft.clientName;
@@ -1039,7 +1114,8 @@ class MaxAgentRuntime {
           };
         }
 
-        if (!existingDraft.clientConfirmed) {
+        const hadAllData = existingDraft.serviceName && existingDraft.dateStr && existingDraft.timeSlot && existingDraft.clientName;
+        if (!hadAllData && !existingDraft.clientConfirmed) {
           draft.clientConfirmed = true;
           this._saveDraft(pid, uid, draft);
           let when = `${draft.dateStr} às ${draft.timeSlot}`;

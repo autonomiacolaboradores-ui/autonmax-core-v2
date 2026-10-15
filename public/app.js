@@ -2116,9 +2116,11 @@ window.PmeEngineV2 = {
 
                 this.renderFiles();
                 this.checkGoogleCalendarStatus();
+                if (window.CatalogManager) window.CatalogManager.loadAll();
             } else {
                 this.renderFiles();
                 this.checkGoogleCalendarStatus();
+                if (window.CatalogManager) window.CatalogManager.loadAll();
             }
         } catch (err) {
             console.error('[PME V2] Erro no load isolado:', err);
@@ -2537,4 +2539,527 @@ window.resolveChatAlert = async function(userKey) {
     } catch (e) {
         console.error(e);
     }
+}
+
+
+// ═════════════════════════════════════════════════════════════════════════════
+// GERENCIADOR DE CATÁLOGOS E SUB-DASHBOARDS (SERVIÇOS & PRODUTOS) — Sprint 12
+// ═════════════════════════════════════════════════════════════════════════════
+window.CatalogManager = {
+    services: [],
+    products: [],
+    activeFilterService: '',
+    activeFilterProduct: '',
+
+    getPartnerId() {
+        if (window.PmeEngineV2 && typeof window.PmeEngineV2.getPartnerId === 'function') {
+            return window.PmeEngineV2.getPartnerId();
+        }
+        return (window._session && window._session.partnerId) ? window._session.partnerId : 'usr_google_demo_100';
+    },
+
+    async loadAll() {
+        await Promise.all([this.loadServices(), this.loadProducts()]);
+    },
+
+    // ── SERVIÇOS ─────────────────────────────────────────────────────────────
+    async loadServices() {
+        try {
+            const partnerId = this.getPartnerId();
+            const res = await fetch('/api/v1/pme/' + encodeURIComponent(partnerId) + '/services');
+            if (!res.ok) return;
+            const data = await res.json();
+            this.services = Array.isArray(data.services) ? data.services : [];
+            this.updateServicesUI();
+        } catch (err) {
+            console.error('[CatalogManager] Erro ao carregar serviços:', err);
+        }
+    },
+
+    updateServicesUI() {
+        const count = this.services.length;
+        const countText = count === 1 ? '1 Serviço' : count + ' Serviços';
+
+        // Badges
+        const b1 = document.getElementById('pmeServicesBadge');
+        if (b1) b1.innerText = countText;
+        const b2 = document.getElementById('servicesDashboardCountBadge');
+        if (b2) b2.innerText = countText;
+
+        // Mini preview no card principal do PME
+        const prev = document.getElementById('pmeServicesMiniPreview');
+        if (prev) {
+            if (count === 0) {
+                prev.innerHTML = '<span style="color: var(--text-muted);">Nenhum serviço cadastrado ainda. Clique abaixo para começar.</span>';
+            } else {
+                const active = this.services.filter(s => s.active !== false);
+                const pills = active.slice(0, 3).map(s => {
+                    const price = s.priceLabel || ('R$ ' + ((s.priceCents || 0) / 100).toFixed(2).replace('.', ','));
+                    return '<span style="background: rgba(0, 163, 255, 0.15); border: 1px solid rgba(0, 163, 255, 0.3); color: #38bdf8; padding: 2px 8px; border-radius: 8px; font-size: 0.75rem; white-space: nowrap;">' + escapeHtml(s.name) + ' (' + price + ')</span>';
+                }).join(' ');
+                const more = count > 3 ? ' <span style="font-size:0.75rem; color:var(--text-muted);">(+' + (count - 3) + ')</span>' : '';
+                prev.innerHTML = '<div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: center;">' + pills + more + '</div>';
+            }
+        }
+
+        this.renderServicesCards();
+    },
+
+    renderServicesCards() {
+        const grid = document.getElementById('servicesCardsGrid');
+        if (!grid) return;
+
+        let list = this.services;
+        if (this.activeFilterService) {
+            const q = this.activeFilterService.toLowerCase();
+            list = list.filter(s => (s.name || '').toLowerCase().includes(q) || (s.category || '').toLowerCase().includes(q) || (s.description || '').toLowerCase().includes(q));
+        }
+
+        if (list.length === 0) {
+            grid.innerHTML = `
+                <div style="grid-column: 1 / -1; text-align: center; padding: 3rem 1rem; background: rgba(255,255,255,0.02); border: 1px dashed rgba(255,255,255,0.1); border-radius: 16px;">
+                    <i data-lucide="calendar-plus" style="width: 48px; height: 48px; color: var(--text-muted); margin-bottom: 0.75rem;"></i>
+                    <h4 style="font-size: 1.1rem; color: var(--text-main); margin-bottom: 0.5rem;">Nenhum serviço encontrado</h4>
+                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem;">Cadastre seu primeiro serviço para o Max agendar horários com seus clientes.</p>
+                    <button type="button" class="exec-action-btn primary" onclick="window.CatalogManager.openServiceModal()">
+                        <i data-lucide="plus-circle"></i> + Cadastrar Serviço Agora
+                    </button>
+                </div>
+            `;
+            if (window.lucide) lucide.createIcons();
+            return;
+        }
+
+        grid.innerHTML = list.map(s => {
+            const price = s.priceLabel || ('R$ ' + ((s.priceCents || 0) / 100).toFixed(2).replace('.', ','));
+            const duration = (s.durationMinutes || 60) + ' min';
+            const cat = escapeHtml(s.category || 'Geral');
+            const desc = s.description ? escapeHtml(s.description) : '<em>Sem observações adicionais.</em>';
+            const inactiveClass = s.active === false ? 'is-inactive' : '';
+            const statusBadge = s.active !== false
+                ? '<span style="background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); padding: 2px 8px; border-radius: 12px; font-size: 0.72rem; font-weight: 600;">Ativo na Agenda</span>'
+                : '<span style="background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); padding: 2px 8px; border-radius: 12px; font-size: 0.72rem; font-weight: 600;">Pausado</span>';
+
+            return `
+                <div class="catalog-item-card ${inactiveClass}">
+                    <div>
+                        <div class="item-card-header">
+                            <h4 class="item-card-title">${escapeHtml(s.name)}</h4>
+                            <span class="item-category-tag">${cat}</span>
+                        </div>
+                        <div class="item-card-meta">
+                            <span class="item-price-pill">${price}</span>
+                            <span class="item-detail-pill"><i data-lucide="clock" style="width: 14px; height: 14px;"></i> ${duration}</span>
+                            ${statusBadge}
+                        </div>
+                        <div class="item-card-desc">${desc}</div>
+                    </div>
+                    <div class="item-card-actions">
+                        <span style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace;">ID: ${escapeHtml(s.id)}</span>
+                        <div style="display: flex; gap: 6px;">
+                            <button type="button" class="item-btn-action" onclick="window.CatalogManager.openServiceModal('${escapeHtml(s.id)}')">
+                                <i data-lucide="edit-3" style="width: 14px; height: 14px;"></i> Editar
+                            </button>
+                            <button type="button" class="item-btn-action danger" onclick="window.CatalogManager.deleteServiceItem('${escapeHtml(s.id)}')">
+                                <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        if (window.lucide) lucide.createIcons();
+    },
+
+    filterServices(val) {
+        this.activeFilterService = val;
+        this.renderServicesCards();
+    },
+
+    // ── PRODUTOS ─────────────────────────────────────────────────────────────
+    async loadProducts() {
+        try {
+            const partnerId = this.getPartnerId();
+            const res = await fetch('/api/v1/pme/' + encodeURIComponent(partnerId) + '/products');
+            if (!res.ok) return;
+            const data = await res.json();
+            this.products = Array.isArray(data.products) ? data.products : [];
+            this.updateProductsUI();
+        } catch (err) {
+            console.error('[CatalogManager] Erro ao carregar produtos:', err);
+        }
+    },
+
+    updateProductsUI() {
+        const count = this.products.length;
+        const countText = count === 1 ? '1 Produto' : count + ' Produtos';
+
+        // Badges
+        const b1 = document.getElementById('pmeProductsBadge');
+        if (b1) b1.innerText = countText;
+        const b2 = document.getElementById('productsDashboardCountBadge');
+        if (b2) b2.innerText = countText;
+
+        // Mini preview no card principal do PME
+        const prev = document.getElementById('pmeProductsMiniPreview');
+        if (prev) {
+            if (count === 0) {
+                prev.innerHTML = '<span style="color: var(--text-muted);">Nenhum produto cadastrado ainda. Clique abaixo para começar.</span>';
+            } else {
+                const active = this.products.filter(p => p.active !== false);
+                const pills = active.slice(0, 3).map(p => {
+                    const price = p.priceLabel || ('R$ ' + ((p.priceCents || 0) / 100).toFixed(2).replace('.', ','));
+                    return '<span style="background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); color: #34d399; padding: 2px 8px; border-radius: 8px; font-size: 0.75rem; white-space: nowrap;">' + escapeHtml(p.name) + ' (' + price + ')</span>';
+                }).join(' ');
+                const more = count > 3 ? ' <span style="font-size:0.75rem; color:var(--text-muted);">(+' + (count - 3) + ')</span>' : '';
+                prev.innerHTML = '<div style="display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: center;">' + pills + more + '</div>';
+            }
+        }
+
+        this.renderProductsCards();
+    },
+
+    renderProductsCards() {
+        const grid = document.getElementById('productsCardsGrid');
+        if (!grid) return;
+
+        let list = this.products;
+        if (this.activeFilterProduct) {
+            const q = this.activeFilterProduct.toLowerCase();
+            list = list.filter(p => (p.name || '').toLowerCase().includes(q) || (p.category || '').toLowerCase().includes(q) || (p.description || '').toLowerCase().includes(q));
+        }
+
+        if (list.length === 0) {
+            grid.innerHTML = `
+                <div style="grid-column: 1 / -1; text-align: center; padding: 3rem 1rem; background: rgba(255,255,255,0.02); border: 1px dashed rgba(255,255,255,0.1); border-radius: 16px;">
+                    <i data-lucide="package-plus" style="width: 48px; height: 48px; color: var(--text-muted); margin-bottom: 0.75rem;"></i>
+                    <h4 style="font-size: 1.1rem; color: var(--text-main); margin-bottom: 0.5rem;">Nenhum produto encontrado</h4>
+                    <p style="font-size: 0.85rem; color: var(--text-muted); margin-bottom: 1.25rem;">Cadastre seu primeiro produto para o Max anotar pedidos de compra e entrega.</p>
+                    <button type="button" class="exec-action-btn primary" onclick="window.CatalogManager.openProductModal()">
+                        <i data-lucide="plus-circle"></i> + Cadastrar Produto Agora
+                    </button>
+                </div>
+            `;
+            if (window.lucide) lucide.createIcons();
+            return;
+        }
+
+        grid.innerHTML = list.map(p => {
+            const price = p.priceLabel || ('R$ ' + ((p.priceCents || 0) / 100).toFixed(2).replace('.', ','));
+            const stock = p.stock != null ? 'Estoque: ' + p.stock + ' ' + (p.unit || 'un') : 'Pronta Entrega';
+            const cat = escapeHtml(p.category || 'Geral');
+            const desc = p.description ? escapeHtml(p.description) : '<em>Sem especificações adicionais.</em>';
+            const inactiveClass = p.active === false ? 'is-inactive' : '';
+            const statusBadge = p.active !== false
+                ? '<span style="background: rgba(16, 185, 129, 0.15); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); padding: 2px 8px; border-radius: 12px; font-size: 0.72rem; font-weight: 600;">Disponível</span>'
+                : '<span style="background: rgba(239, 68, 68, 0.15); color: #ef4444; border: 1px solid rgba(239, 68, 68, 0.3); padding: 2px 8px; border-radius: 12px; font-size: 0.72rem; font-weight: 600;">Esgotado / Pausado</span>';
+
+            return `
+                <div class="catalog-item-card ${inactiveClass}">
+                    <div>
+                        <div class="item-card-header">
+                            <h4 class="item-card-title">${escapeHtml(p.name)}</h4>
+                            <span class="item-category-tag">${cat}</span>
+                        </div>
+                        <div class="item-card-meta">
+                            <span class="item-price-pill" style="color: #34d399;">${price}</span>
+                            <span class="item-detail-pill"><i data-lucide="package" style="width: 14px; height: 14px;"></i> ${stock}</span>
+                            ${statusBadge}
+                        </div>
+                        <div class="item-card-desc">${desc}</div>
+                    </div>
+                    <div class="item-card-actions">
+                        <span style="font-size: 0.75rem; color: var(--text-muted); font-family: monospace;">ID: ${escapeHtml(p.id)}</span>
+                        <div style="display: flex; gap: 6px;">
+                            <button type="button" class="item-btn-action" onclick="window.CatalogManager.openProductModal('${escapeHtml(p.id)}')">
+                                <i data-lucide="edit-3" style="width: 14px; height: 14px;"></i> Editar
+                            </button>
+                            <button type="button" class="item-btn-action danger" onclick="window.CatalogManager.deleteProductItem('${escapeHtml(p.id)}')">
+                                <i data-lucide="trash-2" style="width: 14px; height: 14px;"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        if (window.lucide) lucide.createIcons();
+    },
+
+    filterProducts(val) {
+        this.activeFilterProduct = val;
+        this.renderProductsCards();
+    },
+
+    // ── NAVEGAÇÃO ENTRE TELAS ────────────────────────────────────────────────
+    openServicesDashboard() {
+        const pmeState = document.getElementById('attendantConfiguredState');
+        const sView = document.getElementById('viewServicesDashboard');
+        const pView = document.getElementById('viewProductsDashboard');
+        if (pmeState) pmeState.style.display = 'none';
+        if (pView) pView.style.display = 'none';
+        if (sView) sView.style.display = 'block';
+        this.loadServices();
+        if (window.lucide) lucide.createIcons();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+
+    openProductsDashboard() {
+        const pmeState = document.getElementById('attendantConfiguredState');
+        const sView = document.getElementById('viewServicesDashboard');
+        const pView = document.getElementById('viewProductsDashboard');
+        if (pmeState) pmeState.style.display = 'none';
+        if (sView) sView.style.display = 'none';
+        if (pView) pView.style.display = 'block';
+        this.loadProducts();
+        if (window.lucide) lucide.createIcons();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+
+    closeDashboards() {
+        const pmeState = document.getElementById('attendantConfiguredState');
+        const sView = document.getElementById('viewServicesDashboard');
+        const pView = document.getElementById('viewProductsDashboard');
+        if (sView) sView.style.display = 'none';
+        if (pView) pView.style.display = 'none';
+        if (pmeState) pmeState.style.display = 'block';
+        this.loadAll();
+        if (window.lucide) lucide.createIcons();
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+
+    // ── MODAL DE SERVIÇOS ────────────────────────────────────────────────────
+    openServiceModal(serviceId = null) {
+        const modal = document.getElementById('modalServiceForm');
+        const title = document.getElementById('modalServiceTitle');
+        const fId = document.getElementById('serviceFormId');
+        const fName = document.getElementById('serviceFormName');
+        const fPrice = document.getElementById('serviceFormPrice');
+        const fDuration = document.getElementById('serviceFormDuration');
+        const fCategory = document.getElementById('serviceFormCategory');
+        const fDesc = document.getElementById('serviceFormDescription');
+        const fActive = document.getElementById('serviceFormActive');
+
+        if (serviceId) {
+            const svc = this.services.find(s => s.id === serviceId);
+            if (svc) {
+                if (title) title.innerHTML = '<i data-lucide="edit"></i> Editar Serviço';
+                if (fId) fId.value = svc.id;
+                if (fName) fName.value = svc.name || '';
+                const p = svc.priceCents != null ? (svc.priceCents / 100).toFixed(2).replace('.', ',') : '';
+                if (fPrice) fPrice.value = p;
+                if (fDuration) fDuration.value = svc.durationMinutes || 60;
+                if (fCategory) fCategory.value = svc.category || '';
+                if (fDesc) fDesc.value = svc.description || '';
+                if (fActive) fActive.checked = svc.active !== false;
+            }
+        } else {
+            if (title) title.innerHTML = '<i data-lucide="calendar-plus"></i> Adicionar Novo Serviço';
+            if (fId) fId.value = '';
+            if (fName) fName.value = '';
+            if (fPrice) fPrice.value = '';
+            if (fDuration) fDuration.value = 60;
+            if (fCategory) fCategory.value = 'Atendimento';
+            if (fDesc) fDesc.value = '';
+            if (fActive) fActive.checked = true;
+        }
+
+        if (modal) modal.classList.add('active');
+        if (window.lucide) lucide.createIcons();
+        if (fName) fName.focus();
+    },
+
+    closeServiceModal() {
+        const modal = document.getElementById('modalServiceForm');
+        if (modal) modal.classList.remove('active');
+    },
+
+    async handleSaveService(event) {
+        event.preventDefault();
+        const fId = document.getElementById('serviceFormId')?.value;
+        const name = document.getElementById('serviceFormName')?.value.trim();
+        const priceRaw = document.getElementById('serviceFormPrice')?.value.trim();
+        const duration = parseInt(document.getElementById('serviceFormDuration')?.value) || 60;
+        const category = document.getElementById('serviceFormCategory')?.value.trim() || 'Geral';
+        const description = document.getElementById('serviceFormDescription')?.value.trim() || '';
+        const active = document.getElementById('serviceFormActive')?.checked !== false;
+
+        if (!name) return alert('Por favor, informe o nome do serviço.');
+
+        const priceClean = priceRaw.replace(/[^\d.,]/g, '').replace(',', '.');
+        const priceCents = Math.round(Number(priceClean) * 100) || 0;
+        const partnerId = this.getPartnerId();
+
+        const payload = { name, priceCents, durationMinutes: duration, category, description, active };
+        try {
+            const url = fId
+                ? '/api/v1/pme/' + encodeURIComponent(partnerId) + '/services/' + encodeURIComponent(fId)
+                : '/api/v1/pme/' + encodeURIComponent(partnerId) + '/services';
+            const method = fId ? 'PUT' : 'POST';
+
+            const res = await fetch(url, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (!res.ok) {
+                const err = await res.json();
+                alert('Erro ao salvar serviço: ' + (err.error || 'Falha na requisição.'));
+                return;
+            }
+
+            this.closeServiceModal();
+            await this.loadServices();
+            if (typeof showToast === 'function') {
+                showToast(fId ? 'Serviço atualizado com sucesso!' : 'Novo serviço adicionado!');
+            }
+        } catch (err) {
+            console.error('[CatalogManager] Erro:', err);
+            alert('Erro de conexão ao salvar serviço.');
+        }
+    },
+
+    async deleteServiceItem(serviceId) {
+        if (!confirm('Deseja realmente excluir este serviço da agenda do Max?')) return;
+        try {
+            const partnerId = this.getPartnerId();
+            const res = await fetch('/api/v1/pme/' + encodeURIComponent(partnerId) + '/services/' + encodeURIComponent(serviceId), {
+                method: 'DELETE'
+            });
+            if (!res.ok) {
+                alert('Erro ao excluir serviço.');
+                return;
+            }
+            await this.loadServices();
+            if (typeof showToast === 'function') showToast('Serviço removido.');
+        } catch (err) {
+            console.error('[CatalogManager] Erro ao excluir serviço:', err);
+        }
+    },
+
+    // ── MODAL DE PRODUTOS ────────────────────────────────────────────────────
+    openProductModal(productId = null) {
+        const modal = document.getElementById('modalProductForm');
+        const title = document.getElementById('modalProductTitle');
+        const fId = document.getElementById('productFormId');
+        const fName = document.getElementById('productFormName');
+        const fPrice = document.getElementById('productFormPrice');
+        const fStock = document.getElementById('productFormStock');
+        const fUnit = document.getElementById('productFormUnit');
+        const fCategory = document.getElementById('productFormCategory');
+        const fDesc = document.getElementById('productFormDescription');
+        const fActive = document.getElementById('productFormActive');
+
+        if (productId) {
+            const prd = this.products.find(p => p.id === productId);
+            if (prd) {
+                if (title) title.innerHTML = '<i data-lucide="edit"></i> Editar Produto';
+                if (fId) fId.value = prd.id;
+                if (fName) fName.value = prd.name || '';
+                const p = prd.priceCents != null ? (prd.priceCents / 100).toFixed(2).replace('.', ',') : '';
+                if (fPrice) fPrice.value = p;
+                if (fStock) fStock.value = prd.stock != null ? prd.stock : 99;
+                if (fUnit) fUnit.value = prd.unit || 'un';
+                if (fCategory) fCategory.value = prd.category || '';
+                if (fDesc) fDesc.value = prd.description || '';
+                if (fActive) fActive.checked = prd.active !== false;
+            }
+        } else {
+            if (title) title.innerHTML = '<i data-lucide="package-plus"></i> Adicionar Novo Produto';
+            if (fId) fId.value = '';
+            if (fName) fName.value = '';
+            if (fPrice) fPrice.value = '';
+            if (fStock) fStock.value = 99;
+            if (fUnit) fUnit.value = 'un';
+            if (fCategory) fCategory.value = 'Geral';
+            if (fDesc) fDesc.value = '';
+            if (fActive) fActive.checked = true;
+        }
+
+        if (modal) modal.classList.add('active');
+        if (window.lucide) lucide.createIcons();
+        if (fName) fName.focus();
+    },
+
+    closeProductModal() {
+        const modal = document.getElementById('modalProductForm');
+        if (modal) modal.classList.remove('active');
+    },
+
+    async handleSaveProduct(event) {
+        event.preventDefault();
+        const fId = document.getElementById('productFormId')?.value;
+        const name = document.getElementById('productFormName')?.value.trim();
+        const priceRaw = document.getElementById('productFormPrice')?.value.trim();
+        const stock = parseInt(document.getElementById('productFormStock')?.value) || 0;
+        const unit = document.getElementById('productFormUnit')?.value.trim() || 'un';
+        const category = document.getElementById('productFormCategory')?.value.trim() || 'Geral';
+        const description = document.getElementById('productFormDescription')?.value.trim() || '';
+        const active = document.getElementById('productFormActive')?.checked !== false;
+
+        if (!name) return alert('Por favor, informe o nome do produto.');
+
+        const priceClean = priceRaw.replace(/[^\d.,]/g, '').replace(',', '.');
+        const priceCents = Math.round(Number(priceClean) * 100) || 0;
+        const partnerId = this.getPartnerId();
+
+        const payload = { name, priceCents, stock, unit, category, description, active };
+        try {
+            const url = fId
+                ? '/api/v1/pme/' + encodeURIComponent(partnerId) + '/products/' + encodeURIComponent(fId)
+                : '/api/v1/pme/' + encodeURIComponent(partnerId) + '/products';
+            const method = fId ? 'PUT' : 'POST';
+
+            const res = await fetch(url, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (!res.ok) {
+                const err = await res.json();
+                alert('Erro ao salvar produto: ' + (err.error || 'Falha na requisição.'));
+                return;
+            }
+
+            this.closeProductModal();
+            await this.loadProducts();
+            if (typeof showToast === 'function') {
+                showToast(fId ? 'Produto atualizado com sucesso!' : 'Novo produto adicionado!');
+            }
+        } catch (err) {
+            console.error('[CatalogManager] Erro:', err);
+            alert('Erro de conexão ao salvar produto.');
+        }
+    },
+
+    async deleteProductItem(productId) {
+        if (!confirm('Deseja realmente excluir este produto?')) return;
+        try {
+            const partnerId = this.getPartnerId();
+            const res = await fetch('/api/v1/pme/' + encodeURIComponent(partnerId) + '/products/' + encodeURIComponent(productId), {
+                method: 'DELETE'
+            });
+            if (!res.ok) {
+                alert('Erro ao excluir produto.');
+                return;
+            }
+            await this.loadProducts();
+            if (typeof showToast === 'function') showToast('Produto removido.');
+        } catch (err) {
+            console.error('[CatalogManager] Erro ao excluir produto:', err);
+        }
+    }
+};
+
+function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
 }

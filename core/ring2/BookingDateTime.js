@@ -329,7 +329,49 @@ function workingDayIndex(dayName) {
   return null;
 }
 
+
+/**
+ * Normaliza e formata telefones brasileiros reais no padrão (XX) XXXXX-XXXX ou (XX) XXXX-XXXX.
+ * Trata JIDs do WhatsApp (ex: 5511999999999@s.whatsapp.net), DDI 55, DDD e dígitos extras.
+ */
+function formatBrazilianPhone(input) {
+  if (!input) return '';
+  let str = String(input).trim();
+  if (str.includes('@')) {
+    str = str.split('@')[0];
+  }
+  let digits = str.replace(/\D/g, '');
+  if (!digits) return '';
+
+  if (digits.startsWith('55') && (digits.length === 12 || digits.length === 13)) {
+    digits = digits.slice(2);
+  }
+
+  if (digits.length === 11) {
+    const ddd = digits.slice(0, 2);
+    const p1 = digits.slice(2, 7);
+    const p2 = digits.slice(7);
+    return `(${ddd}) ${p1}-${p2}`;
+  }
+
+  if (digits.length === 10) {
+    const ddd = digits.slice(0, 2);
+    const p1 = digits.slice(2, 6);
+    const p2 = digits.slice(6);
+    return `(${ddd}) ${p1}-${p2}`;
+  }
+
+  if (digits.length > 11) {
+    const ddd = digits.slice(0, 2);
+    const rest = digits.slice(2);
+    return `(${ddd}) ${rest.slice(0, 5)}-${rest.slice(5)}`;
+  }
+
+  return input;
+}
+
 module.exports = {
+  formatBrazilianPhone,
   TZ,
   WEEKDAYS_PT,
   nowSP,

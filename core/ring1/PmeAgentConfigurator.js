@@ -65,7 +65,68 @@ class PmeAgentConfigurator {
    * Persistência debounced (UI / updates em lote).
    * Para agendamentos use flush() — gravação imediata anti-perda.
    */
+
+  _mergeFromDisk() {
+    if (fs.existsSync(this.dbPath)) {
+      try {
+        const raw = fs.readFileSync(this.dbPath, 'utf8');
+        if (raw && raw.trim() !== '') {
+          const diskData = JSON.parse(raw);
+          for (const [pid, diskConfig] of Object.entries(diskData)) {
+            if (this.attendants[pid]) {
+              const memConfig = this.attendants[pid];
+              if (diskConfig.existingAppointments) {
+                if (!memConfig.existingAppointments) memConfig.existingAppointments = [];
+                const memAppIds = new Set(
+                  memConfig.existingAppointments.map((a) => a && (a.appointmentId || a.id)).filter(Boolean)
+                );
+                for (const diskApp of diskConfig.existingAppointments) {
+                  const dId = diskApp && (diskApp.appointmentId || diskApp.id);
+                  if (dId && !memAppIds.has(dId)) {
+                    memConfig.existingAppointments.push(diskApp);
+                  }
+                }
+              }
+              if (
+                (!memConfig.catalog || memConfig.catalog.length === 0) &&
+                diskConfig.catalog &&
+                diskConfig.catalog.length > 0
+              ) {
+                memConfig.catalog = diskConfig.catalog;
+              }
+              if (
+                (!memConfig.services || memConfig.services.length === 0) &&
+                diskConfig.services &&
+                diskConfig.services.length > 0
+              ) {
+                memConfig.services = diskConfig.services;
+              }
+              if (
+                (!memConfig.products || memConfig.products.length === 0) &&
+                diskConfig.products &&
+                diskConfig.products.length > 0
+              ) {
+                memConfig.products = diskConfig.products;
+              }
+              if (
+                (!memConfig.workingHours || !memConfig.workingHours.startTime) &&
+                diskConfig.workingHours
+              ) {
+                memConfig.workingHours = diskConfig.workingHours;
+              }
+            } else {
+              this.attendants[pid] = diskConfig;
+            }
+          }
+        }
+      } catch (mergeErr) {
+        console.warn('[PME_CONFIGURATOR] Merge failed:', mergeErr.message);
+      }
+    }
+  }
+
   saveData() {
+    this._mergeFromDisk();
     if (this._saveTimeout) clearTimeout(this._saveTimeout);
     this._saveTimeout = setTimeout(() => {
       this._saveTimeout = null;
@@ -87,48 +148,7 @@ class PmeAgentConfigurator {
       const start = Date.now();
       const tmpPath = `${this.dbPath}.tmp`;
 
-      // Anti-data-loss: merge appointments/catalog do disco antes de gravar
-      if (fs.existsSync(this.dbPath)) {
-        try {
-          const raw = fs.readFileSync(this.dbPath, 'utf8');
-          if (raw && raw.trim() !== '') {
-            const diskData = JSON.parse(raw);
-            for (const [pid, diskConfig] of Object.entries(diskData)) {
-              if (this.attendants[pid]) {
-                const memConfig = this.attendants[pid];
-                if (diskConfig.existingAppointments) {
-                  if (!memConfig.existingAppointments) memConfig.existingAppointments = [];
-                  const memAppIds = new Set(
-                    memConfig.existingAppointments.map((a) => a && a.appointmentId).filter(Boolean)
-                  );
-                  for (const diskApp of diskConfig.existingAppointments) {
-                    if (diskApp && diskApp.appointmentId && !memAppIds.has(diskApp.appointmentId)) {
-                      memConfig.existingAppointments.push(diskApp);
-                    }
-                  }
-                }
-                if (
-                  (!memConfig.catalog || memConfig.catalog.length === 0) &&
-                  diskConfig.catalog &&
-                  diskConfig.catalog.length > 0
-                ) {
-                  memConfig.catalog = diskConfig.catalog;
-                }
-                if (
-                  (!memConfig.workingHours || !memConfig.workingHours.startTime) &&
-                  diskConfig.workingHours
-                ) {
-                  memConfig.workingHours = diskConfig.workingHours;
-                }
-              } else {
-                this.attendants[pid] = diskConfig;
-              }
-            }
-          }
-        } catch (mergeErr) {
-          console.warn('[PME_CONFIGURATOR] Merge failed:', mergeErr.message);
-        }
-      }
+      this._mergeFromDisk();
 
       const jsonStr = JSON.stringify(this.attendants, null, 2);
       fs.writeFileSync(tmpPath, jsonStr, 'utf8');
@@ -268,6 +288,71 @@ class PmeAgentConfigurator {
    * Obtém a configuração completa do Max para o parceiro informado.
    * Sprint 10: retorna também pdfs (máx 5) e images (máx 10).
    */
+
+  /**
+   * Normaliza item de serviço para agendamento (id, nome, preço, duração, categoria, descrição).
+   */
+  static normalizeServiceItem(raw, index = 0) {
+    const item = raw && typeof raw === 'object' ? raw : {};
+    const name = String(item.name || item.serviceName || item.title || '').trim();
+    if (!name) return null;
+    const id = String(item.id || item.serviceId || '').trim() || ('srv_' + Date.now().toString(36) + '_' + index);
+    const durationMinutes = Math.max(15, Math.min(480, Number(item.durationMinutes || item.duration || item.durationMin) || 60));
+    let priceCents = item.priceCents != null ? Number(item.priceCents) : null;
+    if (priceCents == null && item.price != null) {
+      priceCents = Math.round(Number(String(item.price).replace(/[^\d.,]/g, '').replace(',', '.')) * 100);
+    }
+    if (priceCents != null && !Number.isFinite(priceCents)) priceCents = null;
+    const priceLabel = item.priceLabel || (priceCents != null ? 'R$ ' + (priceCents / 100).toFixed(2).replace('.', ',') : (item.price ? String(item.price) : 'Consulte'));
+    const category = String(item.category || 'Geral').trim();
+    const description = item.description ? String(item.description).slice(0, 500) : '';
+    const active = item.active !== false;
+
+    return {
+      id,
+      name,
+      durationMinutes,
+      priceCents: priceCents || 0,
+      priceLabel,
+      category,
+      description,
+      active
+    };
+  }
+
+  /**
+   * Normaliza item de produto para venda/pedido (id, nome, preço, estoque, unidade, categoria, descrição).
+   */
+  static normalizeProductItem(raw, index = 0) {
+    const item = raw && typeof raw === 'object' ? raw : {};
+    const name = String(item.name || item.productName || item.title || '').trim();
+    if (!name) return null;
+    const id = String(item.id || item.productId || '').trim() || ('prd_' + Date.now().toString(36) + '_' + index);
+    let priceCents = item.priceCents != null ? Number(item.priceCents) : null;
+    if (priceCents == null && item.price != null) {
+      priceCents = Math.round(Number(String(item.price).replace(/[^\d.,]/g, '').replace(',', '.')) * 100);
+    }
+    if (priceCents != null && !Number.isFinite(priceCents)) priceCents = null;
+    const priceLabel = item.priceLabel || (priceCents != null ? 'R$ ' + (priceCents / 100).toFixed(2).replace('.', ',') : (item.price ? String(item.price) : 'Consulte'));
+    const stock = item.stock != null ? item.stock : 99;
+    const unit = String(item.unit || 'un').trim();
+    const category = String(item.category || 'Geral').trim();
+    const description = item.description ? String(item.description).slice(0, 500) : '';
+    const active = item.active !== false;
+
+    return {
+      id,
+      name,
+      priceCents: priceCents || 0,
+      priceLabel,
+      stock,
+      unit,
+      category,
+      description,
+      active
+    };
+  }
+
   getAttendantConfig(partnerId = 'usr_google_demo_100') {
     if (!this.attendants[partnerId]) {
       this.attendants[partnerId] = this.createDefaultConfig(partnerId);
@@ -278,6 +363,23 @@ class PmeAgentConfigurator {
     if (!Array.isArray(config.pdfs))   config.pdfs   = [];
     if (!Array.isArray(config.images)) config.images = [];
     if (!config.displayName)           config.displayName = config.attendantName || 'Max';
+
+    // Suporte robusto a Serviços e Produtos estruturados (Sprint 12)
+    if (!Array.isArray(config.services) || config.services.length === 0) {
+      if (Array.isArray(config.catalog) && config.catalog.length > 0) {
+        config.services = config.catalog.map((c, i) => PmeAgentConfigurator.normalizeServiceItem(c, i)).filter(Boolean);
+      } else {
+        if (!Array.isArray(config.services)) config.services = [];
+      }
+    }
+    if (config.services.length > 0) {
+      config.catalog = config.services;
+    } else if (Array.isArray(config.catalog) && config.catalog.length > 0) {
+      config.services = config.catalog;
+    }
+    if (!Array.isArray(config.products)) {
+      config.products = [];
+    }
     return config;
   }
 
@@ -435,7 +537,7 @@ class PmeAgentConfigurator {
     }
 
     const newPdf = {
-      id: fileMeta.id || `pdf_${Date.now()}`,
+      id: fileMeta.id || ('pdf_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7)),
       name: fileMeta.name || 'documento.pdf',
       sizeBytes: fileMeta.sizeBytes || 0,
       text: fileMeta.text || '',
@@ -468,7 +570,7 @@ class PmeAgentConfigurator {
     }
 
     const newImage = {
-      id: fileMeta.id || `img_${Date.now()}`,
+      id: fileMeta.id || ('img_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7)),
       name: fileMeta.name || 'imagem.png',
       sizeBytes: fileMeta.sizeBytes || 0,
       dataUrl: fileMeta.dataUrl || '',
@@ -643,16 +745,23 @@ class PmeAgentConfigurator {
     // SOBERANIA TOTAL DO PME: A única referência de personalidade é o que o usuário configurou no painel.
     const userConfiguredPersonality = String(customPrompt || '').trim() || 'Atenda os clientes deste estabelecimento com educação, cordialidade e presteza.';
 
-    // Catálogo, Horários e Políticas (com suporte V2 + fallback V1)
-    const catalogStr = (businessRules.catalog !== undefined && businessRules.catalog !== null)
-      ? (businessRules.catalog || 'Nenhum catálogo específico cadastrado.')
-      : (config.catalog && config.catalog.length > 0
-          ? config.catalog.map(c => `- ${c.name}: R$ ${(c.priceCents / 100).toFixed(2)} (${c.durationMinutes} min) - ${c.description}`).join('\n')
-          : 'Consulte nossos atendentes para tabela de preços.');
+    // Catálogo Estruturado de Serviços (Agendamento)
+    let servicesList = (Array.isArray(config.services) && config.services.length > 0)
+      ? config.services.filter(s => s.active !== false)
+      : (Array.isArray(config.catalog) && config.catalog.length > 0 ? config.catalog : []);
+    
+    let catalogStr = servicesList.length > 0
+      ? servicesList.map(s => `• [SERVIÇO] ${s.name} | Preço: ${s.priceLabel || ('R$ ' + ((s.priceCents || 0) / 100).toFixed(2).replace('.', ','))} | Duração: ${s.durationMinutes || 60} min | Categoria: ${s.category || 'Geral'}${s.description ? ' | ' + s.description : ''}`).join('\n')
+      : (businessRules.catalog || 'Nenhum serviço específico cadastrado.');
 
-    const productsStr = (businessRules.products !== undefined && businessRules.products !== null)
-      ? (businessRules.products || 'Nenhum produto cadastrado para venda.')
-      : 'Nenhum produto cadastrado para venda.';
+    // Catálogo Estruturado de Produtos (Pedidos de Compra/Entrega)
+    let productsList = (Array.isArray(config.products) && config.products.length > 0)
+      ? config.products.filter(p => p.active !== false)
+      : [];
+    
+    let productsStr = productsList.length > 0
+      ? productsList.map(p => `• [PRODUTO] ${p.name} | Preço: ${p.priceLabel || ('R$ ' + ((p.priceCents || 0) / 100).toFixed(2).replace('.', ','))} | Estoque: ${p.stock} ${p.unit || 'un'} | Categoria: ${p.category || 'Geral'}${p.description ? ' | ' + p.description : ''}`).join('\n')
+      : (businessRules.products || 'Nenhum produto físico cadastrado para venda.');
 
     const hoursStr = (businessRules.schedules !== undefined && businessRules.schedules !== null)
       ? (businessRules.schedules || 'Consulte nossos horários de atendimento.')
@@ -696,17 +805,122 @@ ${policyStr}
 ${pdfsStr}
 
 [DIRETRIZES OPERACIONAIS DE ATENDIMENTO]
-- Canal WhatsApp: seja objetivo e educado.
+- Canal WhatsApp: seja objetivo, ágil, acolhedor e educado.
 - Responda apenas com base nas informações do estabelecimento acima.
 - NUNCA invente, modifique ou resuma os nomes dos produtos/serviços. Cite-os EXATAMENTE como estão no catálogo.
-- Antes de agendar, garanta que o cliente confirmou o serviço, data e horário.
-- REGRA DE PERSONALIDADE: As instruções e personalidade do bloco acima são sua identidade principal. Nunca as ignore, nem adote um tom genérico ou diferente do que foi configurado pelo estabelecimento.
+- Antes de agendar um serviço, garanta que o cliente confirmou o serviço, data e horário.
+- Antes de fechar um pedido de produto, garanta a lista de itens, quantidades, endereço para entrega ou retirada, e forma de pagamento.
+
+[REGRA DE OURO INVIOLÁVEL: SEPARAÇÃO TOTAL ENTRE SERVIÇOS E PRODUTOS]
+1. SERVIÇOS SÃO EXCLUSIVOS PARA AGENDAMENTO COM HORA MARCADA:
+   - Todo item do "CATÁLOGO DE SERVIÇOS" requer data e horário na agenda.
+   - NUNCA lance um serviço como pedido de entrega/compra.
+   - Se o cliente disser "quero pedir [Serviço]" ou "entrega [Serviço]", esclareça imediatamente: "[Serviço] é um atendimento realizado com hora marcada em nossa agenda. Vamos agendar seu horário? Para qual dia e horário você prefere?"
+
+2. PRODUTOS SÃO EXCLUSIVOS PARA PEDIDOS DE COMPRA, ENTREGA OU RETIRADA:
+   - Todo item do "CATÁLOGO DE PRODUTOS" é uma mercadoria física para delivery ou retirada.
+   - NUNCA tente agendar um horário na agenda para um produto físico.
+   - Se o cliente disser "quero agendar [Produto]", esclareça imediatamente: "[Produto] é um produto físico para pronta entrega ou retirada. Você gostaria de receber no seu endereço ou retirar em nossa loja?"
 `.trim();
   }
 
   /**
    * Registra um novo agendamento na agenda do Max.
    */
+
+  // ── GESTÃO DE SERVIÇOS (AGENDAMENTO COM HORA MARCADA) ──────────────────────
+  listServices(partnerId = 'usr_google_demo_100') {
+    const config = this.getAttendantConfig(partnerId);
+    return config.services || [];
+  }
+
+  addService(partnerId = 'usr_google_demo_100', serviceData = {}) {
+    const config = this.getAttendantConfig(partnerId);
+    const item = PmeAgentConfigurator.normalizeServiceItem(serviceData, config.services.length);
+    if (!item || !item.name) {
+      return { success: false, error: 'Nome do serviço é obrigatório.' };
+    }
+    config.services.push(item);
+    config.catalog = config.services;
+    config.updatedAt = new Date().toISOString();
+    this.saveData();
+    return { success: true, service: item, services: config.services };
+  }
+
+  updateService(partnerId = 'usr_google_demo_100', serviceId, updates = {}) {
+    const config = this.getAttendantConfig(partnerId);
+    const idx = config.services.findIndex(s => s.id === serviceId);
+    if (idx === -1) {
+      return { success: false, error: 'Serviço com id "' + serviceId + '" não encontrado.' };
+    }
+    const current = config.services[idx];
+    const merged = { ...current, ...updates, id: current.id };
+    const normalized = PmeAgentConfigurator.normalizeServiceItem(merged, idx);
+    config.services[idx] = normalized;
+    config.catalog = config.services;
+    config.updatedAt = new Date().toISOString();
+    this.saveData();
+    return { success: true, service: normalized, services: config.services };
+  }
+
+  deleteService(partnerId = 'usr_google_demo_100', serviceId) {
+    const config = this.getAttendantConfig(partnerId);
+    const before = config.services.length;
+    config.services = config.services.filter(s => s.id !== serviceId);
+    if (config.services.length === before) {
+      return { success: false, error: 'Serviço não encontrado.' };
+    }
+    config.catalog = config.services;
+    config.updatedAt = new Date().toISOString();
+    this.saveData();
+    return { success: true, services: config.services };
+  }
+
+  // ── GESTÃO DE PRODUTOS (PEDIDOS DE COMPRA / ENTREGA / RETIRADA) ────────────
+  listProducts(partnerId = 'usr_google_demo_100') {
+    const config = this.getAttendantConfig(partnerId);
+    return config.products || [];
+  }
+
+  addProduct(partnerId = 'usr_google_demo_100', productData = {}) {
+    const config = this.getAttendantConfig(partnerId);
+    const item = PmeAgentConfigurator.normalizeProductItem(productData, config.products.length);
+    if (!item || !item.name) {
+      return { success: false, error: 'Nome do produto é obrigatório.' };
+    }
+    config.products.push(item);
+    config.updatedAt = new Date().toISOString();
+    this.saveData();
+    return { success: true, product: item, products: config.products };
+  }
+
+  updateProduct(partnerId = 'usr_google_demo_100', productId, updates = {}) {
+    const config = this.getAttendantConfig(partnerId);
+    const idx = config.products.findIndex(p => p.id === productId);
+    if (idx === -1) {
+      return { success: false, error: 'Produto com id "' + productId + '" não encontrado.' };
+    }
+    const current = config.products[idx];
+    const merged = { ...current, ...updates, id: current.id };
+    const normalized = PmeAgentConfigurator.normalizeProductItem(merged, idx);
+    config.products[idx] = normalized;
+    config.updatedAt = new Date().toISOString();
+    this.saveData();
+    return { success: true, product: normalized, products: config.products };
+  }
+
+  deleteProduct(partnerId = 'usr_google_demo_100', productId) {
+    const config = this.getAttendantConfig(partnerId);
+    const before = config.products.length;
+    config.products = config.products.filter(p => p.id !== productId);
+    if (config.products.length === before) {
+      return { success: false, error: 'Produto não encontrado.' };
+    }
+    config.updatedAt = new Date().toISOString();
+    this.saveData();
+    return { success: true, products: config.products };
+  }
+
   addAppointment(partnerId, appointment) {
     const config = this.getAttendantConfig(partnerId);
     const newApp = {
@@ -729,8 +943,27 @@ ${pdfsStr}
   }
 }
 
+let _defaultPmeInstance = null;
+function getInstance(dbPath) {
+  if (!_defaultPmeInstance || dbPath) {
+    _defaultPmeInstance = new PmeAgentConfigurator(dbPath);
+  }
+  return _defaultPmeInstance;
+}
+
+PmeAgentConfigurator.getInstance = getInstance;
+PmeAgentConfigurator.getAttendantConfig = (partnerId) => getInstance().getAttendantConfig(partnerId);
+PmeAgentConfigurator.saveData = () => getInstance().saveData();
+PmeAgentConfigurator.markDirty = (partnerId) => getInstance().markDirty(partnerId);
+PmeAgentConfigurator.flush = () => getInstance().flush();
+
 module.exports = {
   PmeAgentConfigurator,
+  getInstance,
+  getAttendantConfig: (partnerId) => getInstance().getAttendantConfig(partnerId),
+  saveData: () => getInstance().saveData(),
+  markDirty: (partnerId) => getInstance().markDirty(partnerId),
+  flush: () => getInstance().flush(),
   MAX_EXECUTIVE_ADVISOR_PHILOSOPHY,
   MAX_PDFS,
   MAX_IMAGES

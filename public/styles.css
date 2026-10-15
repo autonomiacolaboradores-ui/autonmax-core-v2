@@ -2175,3 +2175,174 @@ button.primary-action:active {
 .btn-resume:hover { background: rgba(52, 199, 89, 0.3); }
 .btn-resolve { background: rgba(255, 59, 48, 0.2); color: #ff3b30; border: 1px solid rgba(255, 59, 48, 0.5); }
 .btn-resolve:hover { background: rgba(255, 59, 48, 0.3); }
+
+
+/* ── SUB-DASHBOARDS: SERVIÇOS & PRODUTOS (Sprint 12) ── */
+.catalog-subview {
+    padding: 2rem;
+    border-radius: 20px;
+    margin-top: 1.5rem;
+    animation: fadeInCatalog 0.25s ease-out;
+}
+
+@keyframes fadeInCatalog {
+    from { opacity: 0; transform: translateY(8px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.subview-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1.5rem;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+.catalog-rule-banner {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem 1.25rem;
+    border-radius: 14px;
+    font-size: 0.85rem;
+    line-height: 1.5;
+    margin-bottom: 1.5rem;
+}
+
+.catalog-rule-banner.rule-booking {
+    background: rgba(0, 163, 255, 0.08);
+    border: 1px solid rgba(0, 163, 255, 0.25);
+    color: #e0f2fe;
+}
+
+.catalog-rule-banner.rule-order {
+    background: rgba(16, 185, 129, 0.08);
+    border: 1px solid rgba(16, 185, 129, 0.25);
+    color: #d1fae5;
+}
+
+.subview-toolbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1.5rem;
+    gap: 1rem;
+}
+
+.catalog-cards-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1.25rem;
+}
+
+.catalog-item-card {
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 16px;
+    padding: 1.25rem;
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+    transition: all 0.2s ease;
+}
+
+.catalog-item-card:hover {
+    border-color: rgba(0, 163, 255, 0.4);
+    transform: translateY(-2px);
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+
+.catalog-item-card.is-inactive {
+    opacity: 0.55;
+    border-style: dashed;
+}
+
+.item-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 0.5rem;
+    margin-bottom: 0.5rem;
+}
+
+.item-card-title {
+    font-size: 1.05rem;
+    font-weight: 700;
+    color: var(--text-main, #fff);
+    margin: 0;
+}
+
+.item-category-tag {
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.08);
+    color: var(--text-muted, #94a3b8);
+}
+
+.item-card-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.item-price-pill {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #38bdf8;
+}
+
+.item-detail-pill {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 0.8rem;
+    color: var(--text-muted, #94a3b8);
+}
+
+.item-card-desc {
+    font-size: 0.82rem;
+    color: var(--text-muted, #94a3b8);
+    line-height: 1.45;
+    margin-bottom: 1rem;
+    flex: 1;
+}
+
+.item-card-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-top: 0.75rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.06);
+    gap: 0.5rem;
+}
+
+.item-btn-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px 12px;
+    border-radius: 8px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    background: rgba(255, 255, 255, 0.05);
+    color: var(--text-primary, #f1f5f9);
+    cursor: pointer;
+    transition: all 0.15s;
+}
+
+.item-btn-action:hover {
+    background: rgba(255, 255, 255, 0.12);
+    border-color: rgba(255, 255, 255, 0.25);
+}
+
+.item-btn-action.danger:hover {
+    background: rgba(239, 68, 68, 0.2);
+    border-color: rgba(239, 68, 68, 0.5);
+    color: #f87171;
+}

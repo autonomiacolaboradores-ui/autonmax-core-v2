@@ -81,6 +81,8 @@ class RuntimeCore {
         value TEXT NOT NULL,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
+      INSERT OR IGNORE INTO node_state (key, value) VALUES ('BRL_BALANCE', '0.00');
+      INSERT OR IGNORE INTO node_state (key, value) VALUES ('MAXCOIN_BALANCE', '0.00');
     `);
 
     // Table: user_accounts (RFC 001)

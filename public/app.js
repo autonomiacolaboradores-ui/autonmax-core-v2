@@ -1686,7 +1686,11 @@ function applyModeUI() {
     if (currentMode === 'partner') {
         if (label) label.innerText = 'Modo Parceiro PME';
         if (toggleBtn) toggleBtn.classList.add('partner');
-        pmeItems.forEach(el => el.style.display = (el.tagName === 'BUTTON' || el.tagName === 'NAV') ? 'flex' : 'block');
+        // Cada tela PME tem sua própria navegação; não exponha todos os painéis
+        // ao mesmo tempo durante a restauração da sessão.
+        pmeItems.forEach(el => { el.style.display = 'none'; });
+        const attendantView = document.getElementById('viewAttendant');
+        if (attendantView) attendantView.style.display = 'flex';
         if (statusText) statusText.innerText = '';
         
         if (userNameText) {

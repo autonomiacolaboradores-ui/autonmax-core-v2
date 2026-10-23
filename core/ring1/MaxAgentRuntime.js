@@ -176,6 +176,10 @@ class MaxAgentRuntime {
       const MaxNativeTools = require('../ring2/MaxNativeTools');
       return MaxNativeTools.dispatch('book_appointment_confirmed', { ...(args || {}), partnerId });
     }
+    if (name === 'create_order_confirmed') {
+      const MaxNativeTools = require('../ring2/MaxNativeTools');
+      return MaxNativeTools.dispatch('create_order_confirmed', { ...(args || {}), partnerId });
+    }
     const run = async (n, a, pid) => {
       try {
         return await this.dispatcher.dispatch(n, a || {}, { partnerId: pid });
@@ -853,7 +857,10 @@ class MaxAgentRuntime {
         if (/\b(desistir|esquece|cancela|cancelar)\b/i.test(userMessage)) {
            this._clearOrderDraft(pid, uid);
         } else {
-           let name = this.extractClientName(userMessage, { requireExplicitIntro: !!draft.clientName }) || draft.clientName;
+           // Durante pedido, mensagens como "quero 2 sabonetes" ou um endereço
+           // não são nomes. Só substitua o nome do WhatsApp quando o cliente se
+           // identificar explicitamente ("meu nome é ...").
+           let name = this.extractClientName(userMessage, { requireExplicitIntro: true }) || draft.clientName;
            let cleanPushName = (typeof pushName === 'string' && pushName.trim().length >= 2) ? pushName.trim() : '';
            
            if (!name || name.startsWith('usr_') || name.startsWith('usr_nat_') || name.length < 3) {
@@ -911,7 +918,10 @@ class MaxAgentRuntime {
                const resolved = PmeOrderTools.resolveProduct(productCatalog, prod);
                if (resolved) {
                  newItems.push({ quantity, productName: resolved.name, productId: resolved.id, priceCents: resolved.priceCents });
-               } else {
+               } else if (!Array.isArray(draft.items) || draft.items.length === 0) {
+                 // No primeiro turno, preserve o item desconhecido para informar
+                 // que ele não consta do catálogo. Durante a coleta de endereço
+                 // e pagamento, não transforme números/textos da mensagem em itens.
                  newItems.push({ quantity, productName: prod }); // store raw if not resolved
                }
              }
@@ -958,7 +968,9 @@ class MaxAgentRuntime {
                 
                 let itemsResolved = [];
                 for (const item of draft.items) {
-                   const resolved = item.productId ? item : PmeOrderTools.resolveProduct(productCatalog, item.productName);
+                   // Os rascunhos guardam productName, enquanto o catálogo usa
+                   // name. Re-resolva pelo ID/nome para obter o registro canônico.
+                   const resolved = PmeOrderTools.resolveProduct(productCatalog, item.productName, item.productId);
                    if (resolved && resolved.name) {
                       itemsResolved.push({ 
                         productId: resolved.id || resolved.productId, 

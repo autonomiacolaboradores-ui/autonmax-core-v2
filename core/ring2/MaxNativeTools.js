@@ -781,6 +781,8 @@ class MaxNativeTools {
     switch (name) {
       case 'book_appointment_confirmed':
         return this.book_appointment_confirmed(args);
+      case 'create_order_confirmed':
+        return this.create_order_confirmed(args);
       case 'list_my_appointments':
         return this.list_my_appointments(args);
       case 'reschedule_appointment':

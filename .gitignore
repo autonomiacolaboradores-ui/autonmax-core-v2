@@ -1,0 +1,27 @@
+# Dependencies
+node_modules/
+
+# Environment secrets
+.env
+.env.*
+!.env.example
+
+# SQLite & WhatsApp runtime state
+workspace/*.db
+workspace/*.db-*
+workspace/sessions/
+
+# Build artifacts
+app-web/dist/
+android/.gradle/
+android/build/
+android/app/build/
+
+# Android signing secrets
+android/keystore.properties
+*.jks
+*.keystore
+
+# Logs & OS files
+*.log
+.DS_Store

@@ -1,0 +1,21 @@
+{
+  "name": "autonmax-vnext",
+  "version": "4.0.0-vnext",
+  "description": "AUTONMAX vNext — Pure vertical WhatsApp AI attendant with atomic SQLite booking lock",
+  "type": "commonjs",
+  "main": "bin/start.js",
+  "scripts": {
+    "start": "node bin/start.js",
+    "test": "node --test tests/layer1_storage.test.js tests/layer2_domain.test.js tests/layer3_agent.test.js tests/layer4_messaging.test.js tests/layer5_gateway.test.js tests/layer6_offline_deploy.test.js",
+    "build:web": "node scripts/build_web.js",
+    "verify": "node scripts/verify.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.24",
+    "link-preview-js": "^3.2.0",
+    "qrcode": "^1.5.4"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

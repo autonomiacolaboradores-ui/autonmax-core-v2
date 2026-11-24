@@ -1,0 +1,179 @@
+:root {
+  --surface-bg: #f8fafc;
+  --surface-card: #ffffff;
+  --surface-border: #e2e8f0;
+  --color-primary: #0f766e;
+  --color-text: #0f172a;
+  --color-text-muted: #475569;
+  --color-success: #15803d;
+  --color-warning: #b45309;
+  --color-danger: #b91c1c;
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-heading: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --brand-name: "AUTONMAX vNext";
+  --brand-logo-url: "";
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--surface-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  overflow-x: hidden;
+  max-width: 100%;
+}
+
+.autonmax-app {
+  min-height: 100vh;
+  background: var(--surface-bg);
+  color: var(--color-text);
+  overflow-x: hidden;
+}
+
+.autonmax-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.autonmax-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--surface-card);
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.autonmax-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0.5rem 1rem;
+  background: var(--surface-card);
+  border-bottom: 1px solid var(--surface-border);
+}
+
+.autonmax-main {
+  flex: 1;
+  padding: 1rem;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+.autonmax-card {
+  background: var(--surface-card);
+  border: 1px solid var(--surface-border);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.autonmax-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 9999px;
+  border: 1px solid var(--surface-border);
+  background: var(--surface-card);
+  color: var(--color-text);
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+/* Invariant 4: Mobile-first touch target ergonomics (>= 44x44px) */
+button,
+a,
+input,
+select,
+textarea,
+[role="button"],
+.autonmax-touch-target {
+  min-height: 44px;
+  min-width: 44px;
+  font-family: var(--font-sans);
+}
+
+.autonmax-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5rem 1rem;
+  min-height: 44px;
+  min-width: 44px;
+  border-radius: 0.5rem;
+  border: 1px solid var(--surface-border);
+  background: var(--color-primary);
+  color: var(--surface-card);
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.autonmax-btn-secondary {
+  background: var(--surface-card);
+  color: var(--color-text);
+}
+
+.autonmax-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.autonmax-table th,
+.autonmax-table td {
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--surface-border);
+  text-align: left;
+}
+
+/* Invariant 4: Automatic table-to-card conversion on small screens */
+@media (max-width: 767px) {
+  .autonmax-table thead {
+    display: none;
+  }
+
+  .autonmax-table,
+  .autonmax-table tbody,
+  .autonmax-table tr,
+  .autonmax-table td {
+    display: block;
+    width: 100%;
+  }
+
+  .autonmax-table tr {
+    background: var(--surface-card);
+    border: 1px solid var(--surface-border);
+    border-radius: 0.75rem;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem;
+  }
+
+  .autonmax-table td {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    border-bottom: 1px solid var(--surface-border);
+  }
+
+  .autonmax-table td:last-child {
+    border-bottom: none;
+  }
+
+  .autonmax-table td::before {
+    content: attr(data-label);
+    color: var(--color-text-muted);
+    font-weight: 600;
+  }
+}

@@ -1,0 +1,54 @@
+# render.starter.yaml — AUTONMAX vNext (Modo Starter: Produção 24/7 sem hibernação + Disco Persistido)
+services:
+  - type: web
+    name: autonmax-vnext-prod
+    runtime: node
+    region: oregon
+    plan: starter
+    buildCommand: npm ci --omit=dev
+    startCommand: node bin/start.js
+    healthCheckPath: /health
+    autoDeploy: true
+    disk:
+      name: autonmax-data
+      mountPath: /var/data
+      sizeGB: 2
+    envVars:
+      - key: NODE_VERSION
+        value: 24.19.0
+      - key: NODE_ENV
+        value: production
+      - key: NODE_OPTIONS
+        value: --max-old-space-size=384
+      - key: DB_PATH
+        value: /var/data/autonmax.db
+      - key: SESSIONS_DIR
+        value: /var/data/sessions
+      - key: VOICE_STT_DRIVER
+        value: cloud
+      - key: VOICE_TTS_DRIVER
+        value: off
+      - key: DEBOUNCE_WINDOW_MS
+        value: "2500"
+      - key: MAX_LINES_PER_PARTNER
+        value: "2"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: INTERNAL_API_KEY
+        generateValue: true
+      - key: WEBHOOK_SIGNING_SECRET
+        generateValue: true
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: XAI_API_KEY
+        sync: false
+      - key: OPENROUTER_API_KEY
+        sync: false
+      - key: WEBHOOK_TARGET_URL
+        sync: false

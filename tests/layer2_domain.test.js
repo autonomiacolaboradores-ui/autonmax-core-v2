@@ -8,6 +8,7 @@ const path = require('node:path');
 
 const { DatabaseManager } = require('../core/storage/DatabaseManager');
 const { PartnerRepository } = require('../core/storage/repositories/PartnerRepository');
+const { AppointmentRepository } = require('../core/storage/repositories/AppointmentRepository');
 const { CatalogService } = require('../core/domain/CatalogService');
 const { BookingService } = require('../core/domain/BookingService');
 const { OrderService } = require('../core/domain/OrderService');
@@ -492,6 +493,88 @@ describe('Layer 2 — Domínio PME & Trava Atômica (Elo 1 e Elo 2)', () => {
       } finally {
         fs.rmSync(tmpDir, { recursive: true, force: true });
       }
+    } finally {
+      dbManager.close();
+    }
+  });
+
+  test('7. Trava Física Anti-Passado (PAST_DATE_NOT_ALLOWED): rejeita data/horário passado sem gravar no SQLite', () => {
+    const dbManager = new DatabaseManager({ dbPath: ':memory:' });
+    dbManager.init();
+    const partnerRepo = new PartnerRepository(dbManager);
+    const catalogService = new CatalogService({ dbManager });
+    const appointmentRepo = new AppointmentRepository(dbManager);
+    const bookingService = new BookingService({
+      dbManager,
+      appointmentRepository: appointmentRepo,
+      partnerRepository: partnerRepo,
+      nowFn: () => new Date('2026-11-24T14:30:00-03:00'),
+    });
+
+    try {
+      const partner = partnerRepo.create({
+        id: 'prt-l2-past',
+        email: 'past@autonmax.dev',
+        displayName: 'Agenda Segura',
+      });
+      const svc = catalogService.createItem(partner.id, {
+        id: 'svc-past-test',
+        type: 'SERVICE',
+        name: 'Avaliação Técnica',
+        priceCents: 10000,
+        durationMinutes: 30,
+      });
+
+      // 1. Ano passado (ex.: 2025-11-26) -> rejeição atômica
+      assert.throws(
+        () =>
+          bookingService.bookService({
+            partnerId: partner.id,
+            itemId: svc.id,
+            dateStr: '2025-11-26',
+            timeSlot: '10:00',
+            clientName: 'Cliente Passado',
+            confirmed: true,
+          }),
+        (err) => err instanceof DomainError && err.code === 'PAST_DATE_NOT_ALLOWED'
+      );
+      assert.equal(appointmentRepo.listByPartnerAndDate(partner.id, '2025-11-26').length, 0);
+
+      // 2. Hoje em horário já decorrido (14:00 e 14:30 com relógio em 14:30) -> rejeição atômica
+      assert.throws(
+        () =>
+          bookingService.bookService({
+            partnerId: partner.id,
+            itemId: svc.id,
+            dateStr: '2026-11-24',
+            timeSlot: '14:00',
+            clientName: 'Cliente Atrasado',
+            confirmed: true,
+          }),
+        (err) => err instanceof DomainError && err.code === 'PAST_DATE_NOT_ALLOWED'
+      );
+      assert.equal(appointmentRepo.listByPartnerAndDate(partner.id, '2026-11-24').length, 0);
+
+      // 3. checkAvailableSlots em data passada retorna vazio + pastDate: true
+      const pastSlots = bookingService.checkAvailableSlots({
+        partnerId: partner.id,
+        itemId: svc.id,
+        dateStr: '2025-11-26',
+      });
+      assert.equal(pastSlots.pastDate, true);
+      assert.equal(pastSlots.reason, 'PAST_DATE_NOT_ALLOWED');
+      assert.deepEqual(pastSlots.slots, []);
+
+      // 4. Hoje futuro (15:00) e amanhã (2026-11-25) funcionam normalmente
+      const okToday = bookingService.bookService({
+        partnerId: partner.id,
+        itemId: svc.id,
+        dateStr: '2026-11-24',
+        timeSlot: '15:00',
+        clientName: 'Cliente Hoje',
+        confirmed: true,
+      });
+      assert.equal(okToday.appointment.status, 'CONFIRMED');
     } finally {
       dbManager.close();
     }

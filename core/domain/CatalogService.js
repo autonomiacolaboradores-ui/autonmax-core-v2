@@ -16,6 +16,11 @@ function toDomainItem(row) {
     price_cents: Number(row.price_cents),
     duration_minutes: Number(row.duration_minutes),
     active: Number(row.active),
+    track_stock: Number(row.track_stock ?? 0),
+    stock_quantity:
+      row.stock_quantity !== null && row.stock_quantity !== undefined
+        ? Number(row.stock_quantity)
+        : null,
     price_label: formatPriceCents(row.price_cents),
   };
 }
@@ -95,6 +100,8 @@ class CatalogService {
       durationMinutes,
       category: data.category ?? 'geral',
       active: data.active !== undefined ? data.active : true,
+      trackStock: data.trackStock ?? data.track_stock ?? false,
+      stockQuantity: data.stockQuantity ?? data.stock_quantity ?? null,
     });
 
     return toDomainItem(created);

@@ -239,6 +239,33 @@ function addDays(dateStr, n) {
 }
 
 /**
+ * Builds a dynamic 7-day rolling Sao Paulo calendar starting at `nowSP(referenceDate)`.
+ * @param {Date | number} [referenceDate]
+ */
+function buildRollingCalendarSP(referenceDate = new Date()) {
+  const ref = referenceDate instanceof Date ? referenceDate : new Date(referenceDate);
+  const current = nowSP(ref);
+  const days = [];
+  for (let offset = 0; offset < 7; offset += 1) {
+    const dateStr = addDays(current.dateStr, offset);
+    const weekday = WEEKDAYS_PT[weekdayIndex(dateStr)] || '';
+    const relLabel = offset === 0 ? 'Hoje' : offset === 1 ? 'Amanhã' : `+${offset}d`;
+    days.push({
+      offset,
+      relLabel,
+      weekday,
+      dateStr,
+      label: `${relLabel}: ${weekday}, ${dateStr}`,
+    });
+  }
+  return {
+    now: current,
+    nowWeekday: WEEKDAYS_PT[current.weekday] || '',
+    days,
+  };
+}
+
+/**
  * Formats `YYYY-MM-DD` (and optional `HH:MM`) into readable PT-BR text.
  * @param {string | null | undefined} dateStr
  * @param {string | null | undefined} [timeSlot]
@@ -513,6 +540,7 @@ RegionalNormalizer.formatBrazilianPhone = formatBrazilianPhone;
 RegionalNormalizer.weekdayIndex = weekdayIndex;
 RegionalNormalizer.nowSP = nowSP;
 RegionalNormalizer.addDays = addDays;
+RegionalNormalizer.buildRollingCalendarSP = buildRollingCalendarSP;
 RegionalNormalizer.formatFriendly = formatFriendly;
 RegionalNormalizer.normalizeTimeSlot = normalizeTimeSlot;
 RegionalNormalizer.slotToMinutes = slotToMinutes;
@@ -534,6 +562,7 @@ module.exports = {
   weekdayIndex,
   nowSP,
   addDays,
+  buildRollingCalendarSP,
   formatFriendly,
   normalizeTimeSlot,
   slotToMinutes,

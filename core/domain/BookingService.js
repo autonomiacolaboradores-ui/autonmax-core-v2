@@ -139,6 +139,15 @@ class BookingService {
       deps.catalogRepository || new CatalogRepository(deps.dbManager);
     this.partnerRepository =
       deps.partnerRepository || new PartnerRepository(deps.dbManager);
+    this.nowFn = typeof deps.nowFn === 'function' ? deps.nowFn : null;
+  }
+
+  /**
+   * Returns current Sao Paulo date/time breakdown (injectable for deterministic tests).
+   * @private
+   */
+  _nowSP() {
+    return this.nowFn ? nowSP(this.nowFn()) : nowSP();
   }
 
   /**
@@ -203,9 +212,28 @@ class BookingService {
 
     const item = this._requireServiceItem(partnerId, itemId);
     const dateStr = requireDateStr(rawDateStr);
+    const today = this._nowSP();
+    const durationMinutes = Number(item.duration_minutes) || 30;
+
+    if (!skipPastCheck && dateStr < today.dateStr) {
+      return {
+        ok: true,
+        partnerId,
+        itemId: item.id,
+        serviceName: item.name,
+        dateStr,
+        dateFriendly: formatFriendly(dateStr),
+        durationMinutes,
+        closed: true,
+        pastDate: true,
+        reason: 'PAST_DATE_NOT_ALLOWED',
+        message: `A data ${dateStr} já passou. Hoje em São Paulo é ${today.dateStr} (${today.timeSlot}). Informe uma data a partir de hoje.`,
+        slots: [],
+      };
+    }
+
     const partner = this.partnerRepository.findById(partnerId);
     const window = resolveWorkingWindow(partner, dateStr);
-    const durationMinutes = Number(item.duration_minutes) || 30;
 
     if (!window.open) {
       return {
@@ -235,7 +263,6 @@ class BookingService {
       })
       .filter(Boolean);
 
-    const today = nowSP();
     const step = Number.isInteger(stepMinutes) && stepMinutes > 0 ? stepMinutes : DEFAULT_SLOT_STEP_MIN;
     const slots = [];
 
@@ -317,6 +344,26 @@ class BookingService {
 
     const dateStr = requireDateStr(rawDateStr);
     const timeSlot = requireTimeSlot(rawTimeSlot);
+    const today = this._nowSP();
+    const slotMin = slotToMinutes(timeSlot);
+    const nowMin = today.hh * 60 + today.mm;
+
+    if (
+      dateStr < today.dateStr ||
+      (dateStr === today.dateStr && slotMin <= nowMin)
+    ) {
+      throw new DomainError(
+        'PAST_DATE_NOT_ALLOWED',
+        `Não é possível agendar no passado (${dateStr} às ${timeSlot}). Agora em São Paulo são ${today.dateStr} ${today.timeSlot}. Solicite uma data e horário futuros.`,
+        {
+          dateStr,
+          timeSlot,
+          currentDateStr: today.dateStr,
+          currentTimeSlot: today.timeSlot,
+        },
+        400
+      );
+    }
 
     return this.dbManager.transaction(() => {
       if (idempotencyKey) {

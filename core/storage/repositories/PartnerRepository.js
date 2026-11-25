@@ -14,6 +14,36 @@ const DEFAULT_FEATURE_FLAGS = Object.freeze({
   ownerCommands: true,
 });
 
+function parseTextOrJson(raw, fallback) {
+  if (raw === null || raw === undefined || raw === '') {
+    return fallback;
+  }
+  if (typeof raw !== 'string') {
+    return raw;
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return raw;
+  }
+}
+
+function serializeStructuredField(value, fallback = null) {
+  if (value === undefined) return fallback;
+  if (value === null) return null;
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return JSON.stringify('');
+    try {
+      JSON.parse(trimmed);
+      return trimmed;
+    } catch {
+      return JSON.stringify(value);
+    }
+  }
+  return JSON.stringify(value);
+}
+
 /**
  * Normalizes a partner row into a plain object with parsed JSON fields.
  * @param {Record<string, unknown> | null | undefined} row
@@ -24,8 +54,8 @@ function hydratePartner(row) {
   return {
     ...plain,
     is_active: Number(plain.is_active),
-    working_hours: DatabaseManager.parseJson(plain.working_hours_json, null),
-    policies: DatabaseManager.parseJson(plain.policies_json, null),
+    working_hours: parseTextOrJson(plain.working_hours_json, null),
+    policies: parseTextOrJson(plain.policies_json, null),
     pdf_files: DatabaseManager.parseJson(plain.pdf_files_json, []),
     image_files: DatabaseManager.parseJson(plain.image_files_json, []),
     feature_flags: DatabaseManager.parseJson(
@@ -75,11 +105,11 @@ class PartnerRepository {
           : 1;
     const personalityPrompt = data.personalityPrompt ?? data.personality_prompt ?? null;
     const businessRules = data.businessRules ?? data.business_rules ?? null;
-    const workingHoursJson = DatabaseManager.stringifyJson(
+    const workingHoursJson = serializeStructuredField(
       data.workingHours ?? data.working_hours ?? data.working_hours_json,
       null
     );
-    const policiesJson = DatabaseManager.stringifyJson(
+    const policiesJson = serializeStructuredField(
       data.policies ?? data.policies_json,
       null
     );
@@ -96,6 +126,7 @@ class PartnerRepository {
       '[]'
     );
     const ownerJid = data.ownerJid ?? data.owner_jid ?? null;
+    const logoDataUrl = data.logoDataUrl ?? data.logo_data_url ?? null;
     const featureFlagsJson = DatabaseManager.stringifyJson(
       data.featureFlags ?? data.feature_flags ?? data.feature_flags_json ?? DEFAULT_FEATURE_FLAGS,
       JSON.stringify(DEFAULT_FEATURE_FLAGS)
@@ -106,8 +137,8 @@ class PartnerRepository {
         `INSERT INTO partners (
           id, email, password_hash, display_name, store_segment, is_active,
           personality_prompt, business_rules, working_hours_json, policies_json,
-          welcome_message, pdf_files_json, image_files_json, owner_jid, feature_flags_json
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          welcome_message, pdf_files_json, image_files_json, owner_jid, logo_data_url, feature_flags_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -124,6 +155,7 @@ class PartnerRepository {
         pdfFilesJson,
         imageFilesJson,
         ownerJid,
+        logoDataUrl,
         featureFlagsJson
       );
 
@@ -186,10 +218,10 @@ class PartnerRepository {
       personality_prompt: (v) => ['personality_prompt', v],
       businessRules: (v) => ['business_rules', v],
       business_rules: (v) => ['business_rules', v],
-      workingHours: (v) => ['working_hours_json', DatabaseManager.stringifyJson(v, null)],
-      working_hours_json: (v) => ['working_hours_json', DatabaseManager.stringifyJson(v, null)],
-      policies: (v) => ['policies_json', DatabaseManager.stringifyJson(v, null)],
-      policies_json: (v) => ['policies_json', DatabaseManager.stringifyJson(v, null)],
+      workingHours: (v) => ['working_hours_json', serializeStructuredField(v, null)],
+      working_hours_json: (v) => ['working_hours_json', serializeStructuredField(v, null)],
+      policies: (v) => ['policies_json', serializeStructuredField(v, null)],
+      policies_json: (v) => ['policies_json', serializeStructuredField(v, null)],
       welcomeMessage: (v) => ['welcome_message', v],
       welcome_message: (v) => ['welcome_message', v],
       pdfFiles: (v) => ['pdf_files_json', DatabaseManager.stringifyJson(v, '[]')],
@@ -198,6 +230,8 @@ class PartnerRepository {
       image_files_json: (v) => ['image_files_json', DatabaseManager.stringifyJson(v, '[]')],
       ownerJid: (v) => ['owner_jid', v],
       owner_jid: (v) => ['owner_jid', v],
+      logoDataUrl: (v) => ['logo_data_url', v],
+      logo_data_url: (v) => ['logo_data_url', v],
       featureFlags: (v) => ['feature_flags_json', DatabaseManager.stringifyJson(v, '{}')],
       feature_flags_json: (v) => ['feature_flags_json', DatabaseManager.stringifyJson(v, '{}')],
     };

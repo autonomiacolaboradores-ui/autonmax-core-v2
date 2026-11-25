@@ -56,13 +56,20 @@ describe('Layer 1 — Foundation, SQLite Storage & LifecycleManager', () => {
     // 1a. :memory:
     const memDb = new DatabaseManager({ dbPath: ':memory:' });
     const firstMem = memDb.init();
-    assert.deepEqual(firstMem.applied, [1]);
-    assert.equal(firstMem.currentVersion, 1);
+    assert.deepEqual(firstMem.applied, [1, 2, 3]);
+    assert.equal(firstMem.currentVersion, 3);
 
     const secondMem = memDb.migrate();
     assert.deepEqual(secondMem.applied, []);
-    assert.deepEqual(secondMem.skipped, [1]);
-    assert.equal(secondMem.currentVersion, 1);
+    assert.deepEqual(secondMem.skipped, [1, 2, 3]);
+    assert.equal(secondMem.currentVersion, 3);
+
+    const partnerCols = memDb
+      .getDb()
+      .prepare('PRAGMA table_info(partners)')
+      .all()
+      .map((c) => c.name);
+    assert.ok(partnerCols.includes('logo_data_url'), 'Migration 002 must add logo_data_url');
 
     const memTables = memDb
       .getDb()
@@ -82,7 +89,7 @@ describe('Layer 1 — Foundation, SQLite Storage & LifecycleManager', () => {
 
     try {
       const migrationRes = fileDb.init();
-      assert.deepEqual(migrationRes.applied, [1]);
+      assert.deepEqual(migrationRes.applied, [1, 2, 3]);
       assert.ok(fs.existsSync(dbPath), 'SQLite database file should be created');
 
       const pragmas = fileDb.getPragmas();
@@ -92,8 +99,10 @@ describe('Layer 1 — Foundation, SQLite Storage & LifecycleManager', () => {
       assert.equal(pragmas.busy_timeout, 5000);
 
       const applied = fileDb.getAppliedMigrations();
-      assert.equal(applied.length, 1);
+      assert.equal(applied.length, 3);
       assert.equal(applied[0].version, 1);
+      assert.equal(applied[1].version, 2);
+      assert.equal(applied[2].version, 3);
 
       const idxRow = fileDb
         .getDb()
@@ -108,10 +117,13 @@ describe('Layer 1 — Foundation, SQLite Storage & LifecycleManager', () => {
 
       // Reopen to verify idempotency across restarts
       const reopened = new DatabaseManager({ dbPath });
-      const rerun = reopened.init();
-      assert.deepEqual(rerun.applied, []);
-      assert.deepEqual(rerun.skipped, [1]);
-      reopened.close();
+      try {
+        const rerun = reopened.init();
+        assert.deepEqual(rerun.applied, []);
+        assert.deepEqual(rerun.skipped, [1, 2, 3]);
+      } finally {
+        reopened.close();
+      }
     } finally {
       fileDb.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });

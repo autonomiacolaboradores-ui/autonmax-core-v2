@@ -76,6 +76,16 @@ class CatalogRepository {
     const category = String(data.category ?? 'geral');
     const active =
       data.active !== undefined ? Number(Boolean(data.active)) : 1;
+    const trackStock = Number(
+      Boolean(data.trackStock ?? data.track_stock ?? false)
+    );
+    const rawStockQty = data.stockQuantity ?? data.stock_quantity;
+    const stockQuantity =
+      trackStock === 1 && rawStockQty !== null && rawStockQty !== undefined && rawStockQty !== ''
+        ? Math.max(0, Math.floor(Number(rawStockQty) || 0))
+        : trackStock === 1
+          ? 0
+          : null;
 
     if (!partnerId || !name) {
       throw new Error('CatalogRepository.create requires partnerId and name');
@@ -103,8 +113,9 @@ class CatalogRepository {
       .prepare(
         `INSERT INTO catalog_items (
           id, partner_id, item_type, name, description,
-          price_cents, duration_minutes, category, active, version_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          price_cents, duration_minutes, category, active, version_hash,
+          track_stock, stock_quantity
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -116,7 +127,9 @@ class CatalogRepository {
         durationMinutes,
         category,
         active,
-        versionHash
+        versionHash,
+        trackStock,
+        stockQuantity
       );
 
     return this.findById(id);
@@ -247,16 +260,31 @@ class CatalogRepository {
         durationMinutes,
       });
 
+      const trackStock =
+        patch.trackStock !== undefined || patch.track_stock !== undefined
+          ? Number(Boolean(patch.trackStock ?? patch.track_stock))
+          : Number(existing.track_stock ?? 0);
+      const rawStockQty =
+        patch.stockQuantity !== undefined || patch.stock_quantity !== undefined
+          ? patch.stockQuantity ?? patch.stock_quantity
+          : existing.stock_quantity;
+      const stockQuantity =
+        trackStock === 1 && rawStockQty !== null && rawStockQty !== undefined && rawStockQty !== ''
+          ? Math.max(0, Math.floor(Number(rawStockQty) || 0))
+          : trackStock === 1
+            ? 0
+            : null;
+
       const updateSql = partnerId
         ? `UPDATE catalog_items
            SET item_type = ?, name = ?, description = ?, price_cents = ?,
                duration_minutes = ?, category = ?, active = ?, version_hash = ?,
-               updated_at = CURRENT_TIMESTAMP
+               track_stock = ?, stock_quantity = ?, updated_at = CURRENT_TIMESTAMP
            WHERE id = ? AND partner_id = ?`
         : `UPDATE catalog_items
            SET item_type = ?, name = ?, description = ?, price_cents = ?,
                duration_minutes = ?, category = ?, active = ?, version_hash = ?,
-               updated_at = CURRENT_TIMESTAMP
+               track_stock = ?, stock_quantity = ?, updated_at = CURRENT_TIMESTAMP
            WHERE id = ?`;
       const updateParams = [
         itemType,
@@ -267,6 +295,8 @@ class CatalogRepository {
         category,
         active,
         versionHash,
+        trackStock,
+        stockQuantity,
         id,
       ];
       if (partnerId) updateParams.push(partnerId);

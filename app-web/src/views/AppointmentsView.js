@@ -1,8 +1,19 @@
 'use strict';
 
+const { icon } = require('../components/Icons');
+
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /**
- * AppointmentsView (Miolo): Agenda com cancelamento offline-first e slots injetáveis
- * (`exportAppointmentsPdf` e `shareReceipt`).
+ * AppointmentsView (Miolo): Agenda organizada por dia (`.days-grid` / `.day-card`),
+ * cancelamento offline-first e slots injetáveis (`exportAppointmentsPdf`, `shareReceipt`).
  */
 class AppointmentsView {
   constructor(ctx) {
@@ -52,30 +63,63 @@ class AppointmentsView {
     return this.ctx.ports.share.share({ title: `Comprovante ${id}`, text });
   }
 
-  render(appointments = []) {
+  render(data = []) {
     const mode = this.ctx.uiMode;
-    const list = Array.isArray(appointments) ? appointments : [];
-    const rows = list
-      .map(
-        (a) => `<tr>
-          <td data-label="Horário">${a.time_slot || a.timeSlot}</td>
-          <td data-label="Cliente">${a.client_name || a.clientName}</td>
-          <td data-label="Serviço">${a.item_name_snapshot || a.serviceName || ''}</td>
-          <td data-label="Status">${a.status || 'CONFIRMED'}</td>
-        </tr>`
-      )
-      .join('\n');
+    const list = Array.isArray(data) ? data : Array.isArray(data.items) ? data.items : [];
+
+    const byDate = new Map();
+    for (const appt of list) {
+      const dateKey = String(appt.date_str || appt.dateStr || 'Sem Data');
+      if (!byDate.has(dateKey)) byDate.set(dateKey, []);
+      byDate.get(dateKey).push(appt);
+    }
+
+    const sortedDates = Array.from(byDate.keys()).sort();
+    const dayCardsHtml = sortedDates.length
+      ? sortedDates
+          .map((dateStr) => {
+            const dayItems = byDate.get(dateStr) || [];
+            const rowsHtml = dayItems
+              .map((a) => {
+                const status = String(a.status || 'CONFIRMED').toUpperCase();
+                const isCancelled = status === 'CANCELLED';
+                const time = escapeHtml(a.time_slot || a.timeSlot || '--:--');
+                const client = escapeHtml(a.client_name || a.clientName || 'Cliente');
+                const svc = escapeHtml(a.item_name_snapshot || a.serviceName || '');
+                return `<div style="padding:10px;border-radius:12px;background:var(--surface-input);display:flex;flex-direction:column;gap:6px;">
+                          <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
+                            <strong>${time} — ${client}</strong>
+                            <span class="autonmax-status-badge">${status}</span>
+                          </div>
+                          ${svc ? `<span style="color:var(--color-text-muted);font-size:0.88rem;">${svc}</span>` : ''}
+                          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;">
+                            <button type="button" class="exec-action-btn" data-share-appointment="${escapeHtml(a.id)}">Compartilhar</button>
+                            ${!isCancelled ? `<button type="button" class="logout-btn" data-cancel-appointment="${escapeHtml(a.id)}">Cancelar</button>` : ''}
+                          </div>
+                        </div>`;
+              })
+              .join('\n');
+
+            return `<div class="day-card">
+                      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+                        <h3 style="margin:0;font-family:var(--font-heading);">${escapeHtml(dateStr)}</h3>
+                        <span class="autonmax-status-badge">${dayItems.length} agendamento(s)</span>
+                      </div>
+                      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:12px;">${rowsHtml}</div>
+                      <button type="button" class="exec-action-btn primary" style="width:100%;" data-export-appointments-date="${escapeHtml(dateStr)}">${icon('file-text', { size: 16 })} <span>Baixar PDF do Dia</span></button>
+                    </div>`;
+          })
+          .join('\n')
+      : `<div class="autonmax-card" style="grid-column:1 / -1;text-align:center;color:var(--color-text-muted);">Nenhum agendamento confirmado encontrado.</div>`;
 
     return [
       `<section data-view="appointments" data-ui-mode="${mode}">`,
-      `  <div class="autonmax-card">`,
-      `    <h2 style="font-family: var(--font-heading);">Agenda</h2>`,
-      `    <button type="button" class="autonmax-btn" data-action="export-appointments-pdf">Exportar PDF</button>`,
+      `  <div class="subview-header">`,
+      `    <button type="button" class="exec-action-btn" data-nav-view="dashboard">${icon('arrow-left', { size: 16 })} <span>Voltar ao Painel PME</span></button>`,
+      `    <h2 style="margin:0;font-family:var(--font-heading);">Agenda Confirmada por Dia</h2>`,
+      `    <button type="button" class="exec-action-btn primary glow-neon" data-action="export-appointments-pdf">${icon('file-text', { size: 16 })} <span>Exportar PDF</span></button>`,
       `  </div>`,
-      `  <table class="autonmax-table">`,
-      `    <thead><tr><th>Horário</th><th>Cliente</th><th>Serviço</th><th>Status</th></tr></thead>`,
-      `    <tbody>${rows}</tbody>`,
-      `  </table>`,
+      `  <div class="days-grid">${dayCardsHtml}</div>`,
       `</section>`,
     ].join('\n');
   }

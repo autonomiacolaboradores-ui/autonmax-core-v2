@@ -4,8 +4,8 @@
   "description": "Atendente IA WhatsApp PME Offline-First com Trava Atômica",
   "start_url": "./index.html",
   "display": "standalone",
-  "background_color": "#f8fafc",
-  "theme_color": "#0f766e",
+  "background_color": "#050810",
+  "theme_color": "#00a3ff",
   "lang": "pt-BR",
   "icons": []
 }

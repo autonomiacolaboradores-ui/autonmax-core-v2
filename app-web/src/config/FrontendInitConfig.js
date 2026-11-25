@@ -130,12 +130,15 @@ function mountAutonmaxUI(container, config = {}) {
     ].join('\n');
 
     if (shellEnabled) {
+      const shellMeta = viewData.shell || {};
       const shell = new AppShell({
-        brandName: themeTokens.brandName || 'AUTONMAX vNext',
-        brandLogoUrl: themeTokens.brandLogoUrl || '',
+        brandName: themeTokens.brandName || 'AUTON.MAX',
+        brandLogoUrl: themeTokens.brandLogoUrl || './assets/img/logo-autonmax.jpg',
         activeView: activeViewId,
         featureFlags,
         uiMode,
+        partnerName: shellMeta.partnerName || config.partnerName,
+        partnerLogoUrl: shellMeta.partnerLogoUrl || config.partnerLogoUrl,
       });
       lastHtml = shell.render(operationalHtml);
     } else {

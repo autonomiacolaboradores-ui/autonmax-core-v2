@@ -1,17 +1,51 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   AUTON.MAX vNext — DARK CYBER NEON / GLASSMORPHISM DESIGN SYSTEM
+   All colors, gradients, shadows, borders, and fonts reside exclusively here.
+   ══════════════════════════════════════════════════════════════════════════ */
+
 :root {
-  --surface-bg: #f8fafc;
-  --surface-card: #ffffff;
-  --surface-border: #e2e8f0;
-  --color-primary: #0f766e;
-  --color-text: #0f172a;
-  --color-text-muted: #475569;
-  --color-success: #15803d;
-  --color-warning: #b45309;
-  --color-danger: #b91c1c;
-  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-heading: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --brand-name: "AUTONMAX vNext";
-  --brand-logo-url: "";
+  --surface-bg: #050810;
+  --surface-bg-radial: radial-gradient(circle at 50% -25%, #0F1934 0%, #050810 75%);
+  --surface-card: rgba(10, 15, 28, 0.90);
+  --surface-card-hover: rgba(15, 23, 42, 0.95);
+  --surface-glass: rgba(10, 15, 28, 0.72);
+  --surface-input: rgba(255, 255, 255, 0.06);
+  --surface-pill: rgba(255, 255, 255, 0.04);
+  --surface-backdrop: rgba(5, 8, 16, 0.85);
+  --surface-border: rgba(0, 163, 255, 0.18);
+  --surface-border-subtle: rgba(255, 255, 255, 0.08);
+  --surface-border-glow: rgba(0, 163, 255, 0.35);
+
+  --color-primary: #00a3ff;
+  --color-primary-deep: #0070f3;
+  --color-primary-glow: rgba(0, 163, 255, 0.25);
+  --color-text: #ffffff;
+  --color-text-muted: #94a3b8;
+  --color-success: #4ade80;
+  --color-success-bg: rgba(34, 197, 94, 0.15);
+  --color-success-border: rgba(34, 197, 94, 0.35);
+  --color-warning: #fbbf24;
+  --color-warning-bg: rgba(245, 158, 11, 0.15);
+  --color-warning-border: rgba(245, 158, 11, 0.35);
+  --color-danger: #ff3b30;
+  --color-danger-bg: rgba(255, 59, 48, 0.12);
+  --color-danger-border: rgba(255, 59, 48, 0.35);
+
+  --color-qr-bg: #ffffff;
+  --color-qr-fg: #000000;
+  --skeleton-base: #e2e8f0;
+  --skeleton-shine: #f8fafc;
+
+  --shadow-card: 0 10px 30px rgba(0, 0, 0, 0.45);
+  --shadow-modal: 0 20px 60px rgba(0, 0, 0, 0.85), 0 0 35px rgba(0, 163, 255, 0.2);
+  --shadow-glow: 0 0 24px rgba(0, 163, 255, 0.35);
+
+  --font-sans: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-heading: 'Outfit', system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+
+  --brand-name: "AUTON.MAX";
+  --brand-logo-url: "./assets/img/logo-autonmax.jpg";
 }
 
 *,
@@ -24,16 +58,125 @@ html,
 body {
   margin: 0;
   padding: 0;
+  min-height: 100dvh;
   background-color: var(--surface-bg);
+  background-image: var(--surface-bg-radial);
   color: var(--color-text);
   font-family: var(--font-sans);
   overflow-x: hidden;
   max-width: 100%;
+  -webkit-font-smoothing: antialiased;
 }
 
+.is-hidden {
+  display: none !important;
+}
+
+/* ── GLASSMORPHISM & CYBER ACCENTS ─────────────────────────────────────── */
+
+.glass-cyber {
+  background: var(--surface-card);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid var(--surface-border-glow);
+  border-radius: 20px;
+  box-shadow: var(--shadow-card);
+}
+
+.cyber-accent {
+  color: var(--color-primary);
+}
+
+/* ── WELCOME / AUTH FULL-SCREEN ────────────────────────────────────────── */
+
+.welcome-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow-y: auto;
+  background-color: var(--surface-bg);
+  background-image: var(--surface-bg-radial);
+}
+
+.welcome-card {
+  width: 100%;
+  max-width: 480px;
+  padding: 32px 28px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  box-shadow: var(--shadow-modal);
+}
+
+.clean-brand-logo {
+  width: 76px;
+  height: 76px;
+  border-radius: 18px;
+  object-fit: cover;
+  border: 2px solid var(--color-primary);
+  box-shadow: var(--shadow-glow);
+}
+
+.welcome-title {
+  margin: 0;
+  font-family: var(--font-heading);
+  font-size: 1.75rem;
+  font-weight: 800;
+  color: var(--color-text);
+}
+
+.welcome-subtitle {
+  margin: 0;
+  font-size: 0.95rem;
+  color: var(--color-text-muted);
+}
+
+.welcome-form {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8px;
+  text-align: left;
+}
+
+.welcome-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.auth-feedback {
+  font-size: 0.88rem;
+  text-align: center;
+  padding: 8px 12px;
+  border-radius: 10px;
+  margin: 0;
+}
+
+.auth-feedback.error {
+  color: var(--color-danger);
+  background: var(--color-danger-bg);
+  border: 1px solid var(--color-danger-border);
+}
+
+.auth-feedback.success {
+  color: var(--color-success);
+  background: var(--color-success-bg);
+  border: 1px solid var(--color-success-border);
+}
+
+/* ── APP SHELL & EXECUTIVE HEADER ──────────────────────────────────────── */
+
 .autonmax-app {
-  min-height: 100vh;
-  background: var(--surface-bg);
+  min-height: 100dvh;
+  background: transparent;
   color: var(--color-text);
   overflow-x: hidden;
 }
@@ -41,58 +184,270 @@ body {
 .autonmax-shell {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  min-height: 100dvh;
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 16px 24px 32px;
 }
 
+.home-header,
 .autonmax-header {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 0.75rem;
-  padding: 0.75rem 1rem;
-  background: var(--surface-card);
-  border-bottom: 1px solid var(--surface-border);
+  gap: 14px;
+  padding-bottom: 18px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid var(--surface-border-subtle);
 }
 
+.brand-cluster {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.brand-name {
+  font-family: var(--font-heading);
+  font-size: 1.6rem;
+  font-weight: 900;
+  letter-spacing: 0.5px;
+  color: var(--color-text);
+}
+
+.top-nav-tabs,
 .autonmax-nav {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.5rem;
-  padding: 0.5rem 1rem;
-  background: var(--surface-card);
-  border-bottom: 1px solid var(--surface-border);
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  background: var(--surface-pill);
+  border: 1px solid var(--surface-border-subtle);
+  border-radius: 20px;
+}
+
+.nav-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 18px;
+  border: none;
+  border-radius: 16px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: 0.98rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.nav-tab-btn:hover {
+  color: var(--color-text);
+  background: var(--surface-input);
+}
+
+.nav-tab-btn.active,
+.nav-tab-btn[data-active="true"] {
+  background: linear-gradient(135deg, var(--color-primary-deep) 0%, var(--color-primary) 100%);
+  color: var(--color-text);
+  box-shadow: var(--shadow-glow);
+}
+
+.user-cluster {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.user-profile-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 14px 4px 6px;
+  background: var(--surface-pill);
+  border: 1px solid var(--surface-border-subtle);
+  border-radius: 20px;
+}
+
+.user-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  object-fit: cover;
+  border: 1.5px solid var(--color-primary);
+}
+
+.user-name {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: var(--color-text);
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.logout-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 14px;
+  border-radius: 16px;
+  background: var(--color-danger-bg);
+  border: 1px solid var(--color-danger-border);
+  color: var(--color-danger);
+  font-size: 0.92rem;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.logout-btn:hover {
+  box-shadow: 0 0 16px var(--color-danger-bg);
 }
 
 .autonmax-main {
   flex: 1;
-  padding: 1rem;
   max-width: 100%;
   overflow-x: hidden;
 }
 
-.autonmax-card {
+/* ── CARDS, BANNERS & HERO STATUS ──────────────────────────────────────── */
+
+.autonmax-card,
+.knowledge-card {
   background: var(--surface-card);
   border: 1px solid var(--surface-border);
-  border-radius: 0.75rem;
-  padding: 1rem;
+  border-radius: 18px;
+  padding: 18px 20px;
   margin-bottom: 1rem;
+  box-shadow: var(--shadow-card);
 }
 
-.autonmax-status-badge {
+.attendant-header-banner {
+  text-align: center;
+  margin-bottom: 18px;
+}
+
+.attendant-hero-card {
+  background: linear-gradient(135deg, var(--color-primary-glow) 0%, var(--surface-card) 100%);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--surface-border-glow);
+  border-radius: 18px;
+  padding: 18px 22px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 18px;
+  box-shadow: var(--shadow-card);
+}
+
+.status-indicator-pill {
   display: inline-flex;
   align-items: center;
-  gap: 0.4rem;
-  padding: 0.35rem 0.75rem;
+  gap: 8px;
+  padding: 5px 14px;
   border-radius: 9999px;
-  border: 1px solid var(--surface-border);
-  background: var(--surface-card);
-  color: var(--color-text);
-  font-size: 0.875rem;
-  font-weight: 600;
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.6px;
 }
 
-/* Invariant 4: Mobile-first touch target ergonomics (>= 44x44px) */
+.status-indicator-pill.active {
+  background: var(--color-success-bg);
+  border: 1px solid var(--color-success-border);
+  color: var(--color-success);
+}
+
+.status-indicator-pill.paused {
+  background: var(--color-warning-bg);
+  border: 1px solid var(--color-warning-border);
+  color: var(--color-warning);
+}
+
+.indicator-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.toggle-switch-hero {
+  position: relative;
+  display: inline-block;
+  width: 52px;
+  height: 28px;
+}
+
+.toggle-switch-hero input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.slider-hero {
+  position: absolute;
+  cursor: pointer;
+  inset: 0;
+  background-color: var(--surface-pill);
+  border: 1px solid var(--surface-border-subtle);
+  transition: 0.25s ease;
+  border-radius: 34px;
+}
+
+.slider-hero::before {
+  position: absolute;
+  content: "";
+  height: 20px;
+  width: 20px;
+  left: 3px;
+  bottom: 3px;
+  background-color: var(--color-text);
+  transition: 0.25s ease;
+  border-radius: 50%;
+}
+
+.toggle-switch-hero input:checked + .slider-hero {
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-deep) 100%);
+  border-color: var(--color-primary);
+}
+
+.toggle-switch-hero input:checked + .slider-hero::before {
+  transform: translateX(24px);
+}
+
+.max-executive-actions-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-bottom: 20px;
+}
+
+.pme-v2-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.k-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--color-primary-glow);
+  border: 1px solid var(--surface-border);
+  color: var(--color-primary);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+/* ── BUTTONS, INPUTS & BADGES ──────────────────────────────────────────── */
+
 button,
 a,
 input,
@@ -105,25 +460,184 @@ textarea,
   font-family: var(--font-sans);
 }
 
+.exec-action-btn,
 .autonmax-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 0.5rem 1rem;
+  gap: 8px;
+  padding: 10px 18px;
   min-height: 44px;
   min-width: 44px;
-  border-radius: 0.5rem;
-  border: 1px solid var(--surface-border);
-  background: var(--color-primary);
-  color: var(--surface-card);
+  border-radius: 14px;
+  border: 1px solid var(--surface-border-subtle);
+  background: var(--surface-pill);
+  color: var(--color-text);
+  font-size: 0.95rem;
+  font-weight: 700;
   cursor: pointer;
-  font-weight: 600;
+  transition: all 0.2s ease;
+}
+
+.exec-action-btn:hover,
+.autonmax-btn:hover {
+  border-color: var(--color-primary);
+  background: var(--color-primary-glow);
+}
+
+.exec-action-btn.primary,
+.autonmax-btn {
+  background: linear-gradient(135deg, var(--color-primary-deep) 0%, var(--color-primary) 100%);
+  border-color: transparent;
+  color: var(--color-text);
 }
 
 .autonmax-btn-secondary {
-  background: var(--surface-card);
+  background: var(--surface-pill);
+  border-color: var(--surface-border);
   color: var(--color-text);
 }
+
+.glow-neon,
+.glow-blue {
+  box-shadow: var(--shadow-glow);
+}
+
+.dark-input {
+  width: 100%;
+  background: var(--surface-input);
+  border: 1px solid var(--surface-border);
+  border-radius: 14px;
+  padding: 12px 16px;
+  color: var(--color-text);
+  font-size: 1rem;
+  outline: none;
+}
+
+.dark-input:focus {
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-glow);
+}
+
+.autonmax-status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 9999px;
+  border: 1px solid var(--surface-border);
+  background: var(--surface-card);
+  color: var(--color-text);
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+/* ── SUBVIEWS, CATALOG & AGENDA/ORDERS GRIDS ───────────────────────────── */
+
+.subview-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.catalog-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.days-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 18px;
+}
+
+.day-card {
+  background: var(--surface-card);
+  border: 1px solid var(--surface-border);
+  border-radius: 16px;
+  padding: 20px;
+}
+
+.catalog-rule-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 14px;
+  background: var(--color-primary-glow);
+  border: 1px solid var(--surface-border);
+  color: var(--color-text);
+  margin-bottom: 16px;
+}
+
+/* ── MODAL & WHATSAPP QR SKELETON SHIMMER ──────────────────────────────── */
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: var(--surface-backdrop);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+}
+
+.modal-card {
+  width: 100%;
+  max-width: 440px;
+  padding: 26px 24px;
+  text-align: center;
+  box-shadow: var(--shadow-modal);
+}
+
+.qr-placeholder {
+  margin: 18px auto;
+  width: 220px;
+  height: 220px;
+  background: var(--color-qr-bg);
+  color: var(--color-qr-fg);
+  padding: 12px;
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.qr-image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.qr-skeleton {
+  width: 100%;
+  height: 100%;
+  border-radius: 8px;
+  background: linear-gradient(
+    90deg,
+    var(--skeleton-base) 25%,
+    var(--skeleton-shine) 50%,
+    var(--skeleton-base) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.4s infinite linear;
+}
+
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+/* ── TABLES & MOBILE-FIRST RESPONSIVENESS ──────────────────────────────── */
 
 .autonmax-table {
   width: 100%;
@@ -133,12 +647,29 @@ textarea,
 .autonmax-table th,
 .autonmax-table td {
   padding: 0.75rem;
-  border-bottom: 1px solid var(--surface-border);
+  border-bottom: 1px solid var(--surface-border-subtle);
   text-align: left;
 }
 
-/* Invariant 4: Automatic table-to-card conversion on small screens */
 @media (max-width: 767px) {
+  .autonmax-shell {
+    padding: 12px 12px 24px;
+  }
+
+  .home-header,
+  .attendant-hero-card,
+  .welcome-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .max-executive-actions-grid,
+  .pme-v2-grid,
+  .catalog-cards-grid,
+  .days-grid {
+    grid-template-columns: 1fr;
+  }
+
   .autonmax-table thead {
     display: none;
   }
@@ -164,7 +695,7 @@ textarea,
     justify-content: space-between;
     align-items: center;
     gap: 0.5rem;
-    border-bottom: 1px solid var(--surface-border);
+    border-bottom: 1px solid var(--surface-border-subtle);
   }
 
   .autonmax-table td:last-child {

@@ -1,16 +1,15 @@
 'use strict';
 
-const CACHE_NAME = 'autonmax-vnext-shell-v1';
+const CACHE_NAME = 'autonmax-vnext-shell-__BUILD_ID__';
 const APP_SHELL_ASSETS = [
   './',
   './index.html',
   './manifest.webmanifest',
-  './src/theme/tokens.css',
 ];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL_ASSETS))
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(APP_SHELL_ASSETS)).catch(() => {})
   );
   self.skipWaiting();
 });
@@ -21,9 +20,8 @@ self.addEventListener('activate', (event) => {
       Promise.all(
         keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k))
       )
-    )
+    ).then(() => self.clients.claim())
   );
-  self.clients.claim();
 });
 
 self.addEventListener('fetch', (event) => {
@@ -31,20 +29,20 @@ self.addEventListener('fetch', (event) => {
   if (req.method !== 'GET') return;
 
   const url = new URL(req.url);
-  if (url.pathname.startsWith('/api/')) {
+  if (url.pathname.startsWith('/api/') || url.pathname === '/health') {
     return;
   }
 
+  // Network-First: always fetch fresh UI from server when online, falling back to cache only offline.
   event.respondWith(
-    caches.match(req).then((cached) => {
-      if (cached) return cached;
-      return fetch(req).then((networkRes) => {
+    fetch(req, { cache: 'no-store' })
+      .then((networkRes) => {
         if (networkRes && networkRes.ok && url.origin === self.location.origin) {
           const clone = networkRes.clone();
           caches.open(CACHE_NAME).then((cache) => cache.put(req, clone));
         }
         return networkRes;
-      });
-    })
+      })
+      .catch(() => caches.match(req))
   );
 });

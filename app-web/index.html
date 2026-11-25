@@ -3,17 +3,37 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0f766e" />
-    <title>AUTONMAX vNext</title>
+    <meta name="theme-color" content="#050810" />
+    <title>AUTON.MAX — Atendente Digital PME</title>
+    <link rel="icon" type="image/jpeg" href="./assets/img/logo-autonmax.jpg" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="stylesheet" href="./src/theme/tokens.css" />
   </head>
   <body>
-    <div id="autonmax-root"></div>
+    <div id="autonmax-auth"></div>
+    <div id="autonmax-root" class="is-hidden"></div>
+    <div id="autonmax-modal"></div>
+    <script src="./app.bundle.js" defer></script>
     <script>
       if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => {
-          navigator.serviceWorker.register('./sw.js').catch(() => {});
+          var hadController = Boolean(navigator.serviceWorker.controller);
+          navigator.serviceWorker.addEventListener('controllerchange', function () {
+            if (!hadController) return;
+            try {
+              if (sessionStorage.getItem('autonmax_sw_reloaded') === '1') return;
+              sessionStorage.setItem('autonmax_sw_reloaded', '1');
+            } catch {}
+            window.location.reload();
+          });
+          navigator.serviceWorker
+            .register('./sw.js', { updateViaCache: 'none' })
+            .then(function (reg) {
+              if (reg && typeof reg.update === 'function') {
+                reg.update().catch(function () {});
+              }
+            })
+            .catch(function () {});
         });
       }
     </script>

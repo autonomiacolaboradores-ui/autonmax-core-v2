@@ -10,6 +10,13 @@ const { CapacitorSqliteAdapter } = require('../app-web/src/storage/CapacitorSqli
 const { SyncQueue } = require('../app-web/src/sync/SyncQueue');
 const { createEnvironmentPorts } = require('../app-web/src/ports/EnvironmentPorts');
 const { mountAutonmaxUI } = require('../app-web/src/config/FrontendInitConfig');
+const { AuthScreen } = require('../app-web/src/components/AuthScreen');
+const { WhatsAppQrModal } = require('../app-web/src/components/WhatsAppQrModal');
+const { AppShell } = require('../app-web/src/shell/AppShell');
+const { DatabaseManager } = require('../core/storage/DatabaseManager');
+const { PartnerRepository } = require('../core/storage/repositories/PartnerRepository');
+const { CatalogService } = require('../core/domain/CatalogService');
+const { toCatalogDto } = require('../core/gateway/routes/CatalogRoutes');
 
 const VNEXT_ROOT = path.resolve(__dirname, '..');
 
@@ -299,7 +306,7 @@ describe('Layer 6 — Interface Híbrida Offline-First (SPA/PWA + Capacitor) & D
         }
       }
     }
-    assert.equal(files.length, 7, 'Expected 6 views + 1 component file');
+    assert.equal(files.length, 10, 'Expected 6 views + 4 component files');
 
     const hexColorRe = /#[0-9a-fA-F]{3,8}\b/;
     const runtimeImportRe = /@capacitor\/|indexedDB|localStorage/i;
@@ -363,5 +370,346 @@ describe('Layer 6 — Interface Híbrida Offline-First (SPA/PWA + Capacitor) & D
     assert.match(css, /overflow-x:\s*hidden/);
     assert.match(css, /@media\s*\(max-width:\s*767px\)/);
     assert.match(css, /\.autonmax-table\s+thead\s*\{\s*display:\s*none;/);
+  });
+
+  test('8. Identidade Visual Onda 3: AuthScreen, AppShell Executivo & WhatsAppQrModal', () => {
+    const authScreen = new AuthScreen();
+    const loginHtml = authScreen.render({ mode: 'login' });
+    assert.match(loginHtml, /data-auth-screen="true"/);
+    assert.match(loginHtml, /Bem-vindo ao/);
+    assert.match(loginHtml, /Entrar/);
+    assert.match(loginHtml, /Criar Conta/);
+    assert.equal(loginHtml.includes('name="displayName"'), false);
+
+    const registerHtml = authScreen.render({ mode: 'register', error: 'Credenciais inválidas' });
+    assert.equal(registerHtml.includes('name="displayName"'), true);
+    assert.match(registerHtml, /Credenciais inválidas/);
+
+    const shell = new AppShell({
+      brandName: 'AUTON.MAX',
+      partnerName: 'Barbearia Alpha',
+      activeView: 'dashboard',
+      uiMode: 'guided',
+    });
+    const shellHtml = shell.render('<div data-inner="true"></div>');
+    assert.match(shellHtml, /AUTON<span class="cyber-accent">\.MAX<\/span>/);
+    assert.match(shellHtml, /Painel de Configurações/);
+    assert.match(shellHtml, /Atendimentos Ativos/);
+    assert.match(shellHtml, /Barbearia Alpha/);
+    assert.match(shellHtml, /data-shell-action="logout"/);
+
+    // shell_enabled: false omits AppShell
+    const embedded = mountAutonmaxUI(
+      { innerHTML: '', style: { setProperty() {} } },
+      { shell_enabled: false }
+    );
+    try {
+      assert.equal(embedded.html.includes('data-autonmax-shell="true"'), false);
+    } finally {
+      embedded.unmount();
+    }
+
+    const modal = new WhatsAppQrModal();
+    const skeletonHtml = modal.render({ open: true, status: 'PAIRING_READY', qrCodeBase64: null });
+    assert.match(skeletonHtml, /data-wa-modal="true"/);
+    assert.match(skeletonHtml, /data-qr-skeleton="true"/);
+
+    const qrHtml = modal.render({
+      open: true,
+      status: 'PAIRING_READY',
+      qrCodeBase64: 'data:image/png;base64,AAAA',
+    });
+    assert.match(qrHtml, /data-wa-qr-img="true"/);
+    assert.equal(qrHtml.includes('data-qr-skeleton="true"'), false);
+
+    const connectedHtml = modal.render({
+      open: true,
+      status: 'CONNECTED',
+      phoneNumber: '5511999990000',
+    });
+    assert.match(connectedHtml, /WhatsApp Conectado/);
+    assert.match(connectedHtml, /5511999990000/);
+  });
+
+  test('9. Onda 4 Views Completas: DashboardView PME, CatalogView (Serviços/Produtos), Appointments/Orders por Dia & ConversationsView', () => {
+    const ui = mountAutonmaxUI(
+      { innerHTML: '', style: { setProperty() {} } },
+      { shell_enabled: false, ui_mode: 'guided' }
+    );
+
+    try {
+      // 1. DashboardView PME
+      const dashHtml = ui.render({
+        dashboard: {
+          partner: {
+            displayName: 'Barbearia Alpha',
+            activeStatus: 'ACTIVE',
+            personalityPrompt: 'Seja cordial',
+            workingHours: '09:00 às 18:00',
+            policies: 'Pix e Cartão',
+          },
+          catalog: [
+            { id: 's1', name: 'Corte', type: 'SERVICE', priceCents: 5000, durationMinutes: 45 },
+            { id: 'p1', name: 'Pomada', type: 'PRODUCT', priceCents: 3500 },
+          ],
+          appointmentsCount: 3,
+          ordersCount: 2,
+          waStatus: 'CONNECTED',
+          aiTestResult: { ok: true, providerUsed: 'groq', model: 'llama-3.3-70b', text: 'Online!' },
+        },
+      });
+      assert.match(dashHtml, /Atendente Digital Max/);
+      assert.match(dashHtml, /ATIVO E ATENDENDO/);
+      assert.match(dashHtml, /data-action="toggle-partner-active"/);
+      assert.match(dashHtml, /data-action="test-ai"/);
+      assert.match(dashHtml, /data-ai-test-result="true"/);
+      assert.match(dashHtml, /1 Serviços/);
+      assert.match(dashHtml, /1 Produtos/);
+      assert.match(dashHtml, /Confirmados gravados:\s*<strong>3<\/strong>/);
+      assert.match(dashHtml, /Confirmados gravados:\s*<strong>2<\/strong>/);
+      assert.match(dashHtml, /Salvar Alterações do Max/);
+
+      // 2. CatalogView (PRODUCT mode shows inviolable order rule banner)
+      ui.navigate('catalog');
+      const prodHtml = ui.render({
+        catalog: {
+          items: [
+            { id: 's1', name: 'Corte', type: 'SERVICE', priceCents: 5000, durationMinutes: 45 },
+            { id: 'p1', name: 'Pomada', type: 'PRODUCT', priceCents: 3500 },
+          ],
+          filterType: 'PRODUCT',
+          formOpen: true,
+        },
+      });
+      assert.match(prodHtml, /Painel de Produtos/);
+      assert.match(prodHtml, /REGRA INVIOLÁVEL DE PEDIDOS DE PRODUTO/);
+      assert.match(prodHtml, /Pomada/);
+      assert.equal(prodHtml.includes('Corte'), false);
+      assert.match(prodHtml, /data-catalog-form="true"/);
+
+      // 3. AppointmentsView grouped by day
+      ui.navigate('appointments');
+      const apptHtml = ui.render({
+        appointments: [
+          {
+            id: 'a1',
+            date_str: '2026-12-20',
+            time_slot: '10:00',
+            client_name: 'Ana',
+            item_name_snapshot: 'Corte',
+            status: 'CONFIRMED',
+          },
+        ],
+      });
+      assert.match(apptHtml, /days-grid/);
+      assert.match(apptHtml, /2026-12-20/);
+      assert.match(apptHtml, /data-export-appointments-date="2026-12-20"/);
+      assert.match(apptHtml, /data-cancel-appointment="a1"/);
+
+      // 4. OrdersView grouped by day (including full product name)
+      ui.navigate('orders');
+      const orderHtml = ui.render({
+        orders: [
+          {
+            id: 'ord-1234',
+            created_at: '2026-12-20T14:00:00Z',
+            client_name: 'Bruno',
+            items: [
+              {
+                name: 'Pomada Modeladora Premium Efeito Seco',
+                qty: 2,
+                price_cents: 1750,
+                subtotal_cents: 3500,
+              },
+            ],
+            total_cents: 3500,
+            status: 'CONFIRMED',
+          },
+        ],
+      });
+      assert.match(orderHtml, /days-grid/);
+      assert.match(orderHtml, /2026-12-20/);
+      assert.match(orderHtml, /2x Pomada Modeladora Premium Efeito Seco/);
+      assert.match(orderHtml, /R\$ 35,00/);
+      assert.match(orderHtml, /data-export-orders-date="2026-12-20"/);
+
+      // 5. ConversationsView with Soft-Pause, toggle Ver/Ocultar Mensagens & operator reply form
+      ui.navigate('conversations');
+      const convItems = [
+        { id: 'c1', external_chat_id: '5511999990001@s.whatsapp.net', is_paused: 1 },
+        { id: 'c2', external_chat_id: '5511999990002@s.whatsapp.net', is_paused: 0 },
+      ];
+      const convHtml = ui.render({
+        conversations: {
+          items: convItems,
+          selectedConversationId: 'c1',
+          messages: [{ role: 'customer', content: 'Oi, preciso de ajuda' }],
+        },
+      });
+      assert.match(convHtml, /PAUSADO — HUMANO NO CONTROLE/);
+      assert.match(convHtml, /Retomar IA/);
+      assert.match(convHtml, /data-chat-jid="5511999990001@s\.whatsapp\.net"/);
+      assert.match(convHtml, /data-conv-select="c1"[^>]*aria-expanded="true"[^>]*>.*Ocultar Mensagens/);
+      assert.match(convHtml, /data-conv-select="c2"[^>]*aria-expanded="false"[^>]*>.*Ver Mensagens/);
+      assert.match(convHtml, /data-conv-history="c1"/);
+      assert.match(convHtml, /data-operator-form="c1"/);
+      assert.match(convHtml, /Oi, preciso de ajuda/);
+
+      // Trocar para c2 recolhe c1 e abre c2
+      const convSwitchHtml = ui.render({
+        conversations: {
+          items: convItems,
+          selectedConversationId: 'c2',
+          messages: [{ role: 'customer', content: 'Segunda conversa' }],
+        },
+      });
+      assert.equal(convSwitchHtml.includes('data-conv-history="c1"'), false);
+      assert.match(convSwitchHtml, /data-conv-history="c2"/);
+      assert.match(convSwitchHtml, /data-conv-select="c1"[^>]*aria-expanded="false"[^>]*>.*Ver Mensagens/);
+      assert.match(convSwitchHtml, /data-conv-select="c2"[^>]*aria-expanded="true"[^>]*>.*Ocultar Mensagens/);
+
+      // Recolher fecha o painel e volta botão para Ver Mensagens
+      const convCollapsedHtml = ui.render({
+        conversations: {
+          items: convItems,
+          selectedConversationId: null,
+          messages: [],
+        },
+      });
+      assert.equal(convCollapsedHtml.includes('data-conv-history='), false);
+      assert.equal(convCollapsedHtml.includes('Ocultar Mensagens'), false);
+      assert.match(convCollapsedHtml, /Ver Mensagens/);
+    } finally {
+      ui.unmount();
+    }
+  });
+
+  test('10. E2E Produto Fictício + Interruptor de Estoque (Ilimitado para Software vs Controlado) persiste no SQLite e exibe na seção de Produtos', () => {
+    const dbManager = new DatabaseManager({ dbPath: ':memory:' });
+    dbManager.init();
+    const partnerRepo = new PartnerRepository(dbManager);
+    const catalogService = new CatalogService({ dbManager });
+    const partner = partnerRepo.create({
+      id: 'prt-prod-test',
+      email: 'soft@autonmax.dev',
+      displayName: 'SoftHouse',
+    });
+
+    const ui = mountAutonmaxUI(
+      { innerHTML: '', style: { setProperty() {} } },
+      { shell_enabled: false, ui_mode: 'guided' }
+    );
+
+    try {
+      // 1. Cadastra produto fictício de software sem limitação de estoque (trackStock: false)
+      const createdSoftware = catalogService.createItem(partner.id, {
+        name: 'Licença Software AUTONMAX Pro',
+        type: 'PRODUCT',
+        priceCents: 19900,
+        durationMinutes: 30,
+        category: 'Software',
+        description: 'Licença mensal ilimitada',
+        trackStock: false,
+        stockQuantity: null,
+      });
+      assert.equal(createdSoftware.track_stock, 0);
+      assert.equal(createdSoftware.stock_quantity, null);
+
+      // 2. Cadastra produto físico com estoque controlado (trackStock: true, stockQuantity: 15)
+      const createdPhysical = catalogService.createItem(partner.id, {
+        name: 'Kit Hardware NFC',
+        type: 'PRODUCT',
+        priceCents: 8900,
+        category: 'Hardware',
+        trackStock: true,
+        stockQuantity: 15,
+      });
+      assert.equal(createdPhysical.track_stock, 1);
+      assert.equal(createdPhysical.stock_quantity, 15);
+
+      // 3. Recarrega do SQLite (simulando reload/reabertura da seção de Produtos)
+      const persisted = catalogService
+        .listItems(partner.id, { type: 'PRODUCT' })
+        .map(toCatalogDto);
+      assert.equal(persisted.length, 2);
+
+      // 4. Renderiza CatalogView na seção de Produtos com formulário aberto
+      ui.navigate('catalog');
+      const html = ui.render({
+        catalog: {
+          items: persisted,
+          filterType: 'PRODUCT',
+          formOpen: true,
+        },
+      });
+
+      assert.match(html, /data-catalog-stock-toggle="true"/);
+      assert.match(html, /Licença Software AUTONMAX Pro/);
+      assert.match(html, /R\$ 199,00/);
+      assert.match(html, /Estoque: Ilimitado/);
+      assert.match(html, /Kit Hardware NFC/);
+      assert.match(html, /Estoque: 15 un/);
+    } finally {
+      ui.unmount();
+      dbManager.close();
+    }
+  });
+
+  test('11. E2E Serviço Fictício: criação, persistência no SQLite e exibição na seção de Serviços', () => {
+    const dbManager = new DatabaseManager({ dbPath: ':memory:' });
+    dbManager.init();
+    const partnerRepo = new PartnerRepository(dbManager);
+    const catalogService = new CatalogService({ dbManager });
+    const partner = partnerRepo.create({
+      id: 'prt-svc-test',
+      email: 'svc@autonmax.dev',
+      displayName: 'Studio Tech',
+    });
+
+    const ui = mountAutonmaxUI(
+      { innerHTML: '', style: { setProperty() {} } },
+      { shell_enabled: false, ui_mode: 'guided' }
+    );
+
+    try {
+      // 1. Cadastra serviço fictício no SQLite
+      const created = catalogService.createItem(partner.id, {
+        name: 'Consultoria de Implantação',
+        type: 'SERVICE',
+        priceCents: 25000,
+        durationMinutes: 60,
+        category: 'Consultoria',
+        description: 'Implantação completa com treinamento.',
+      });
+      assert.equal(created.item_type, 'SERVICE');
+      assert.equal(created.price_cents, 25000);
+      assert.equal(created.duration_minutes, 60);
+
+      // 2. Recarrega do SQLite (simulando persistência após salvar/reabrir)
+      const persisted = catalogService
+        .listItems(partner.id, { type: 'SERVICE' })
+        .map(toCatalogDto);
+      assert.equal(persisted.length, 1);
+      assert.equal(persisted[0].name, 'Consultoria de Implantação');
+
+      // 3. Renderiza CatalogView na seção de Serviços
+      ui.navigate('catalog');
+      const html = ui.render({
+        catalog: {
+          items: persisted,
+          filterType: 'SERVICE',
+          formOpen: false,
+        },
+      });
+
+      assert.match(html, /Painel de Serviços & Agendamentos/);
+      assert.match(html, /1 Serviços/);
+      assert.match(html, /Consultoria de Implantação/);
+      assert.match(html, /R\$ 250,00/);
+      assert.match(html, /60 min/);
+    } finally {
+      ui.unmount();
+      dbManager.close();
+    }
   });
 });

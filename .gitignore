@@ -7,6 +7,7 @@ node_modules/
 !.env.example
 
 # SQLite & WhatsApp runtime state
+workspace/
 workspace/*.db
 workspace/*.db-*
 workspace/sessions/
@@ -25,3 +26,9 @@ android/keystore.properties
 # Logs & OS files
 *.log
 .DS_Store
+
+# Archived historical markdown snapshots
+docs/markdown codigo historico/
+
+# Temporary legacy reference folder (never commit)
+max_atendente_certificado area de trabalho/

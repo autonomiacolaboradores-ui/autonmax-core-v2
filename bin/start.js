@@ -35,12 +35,48 @@ const { GatewayServer } = require('../core/gateway/Server');
 const { LifecycleManager } = require('../core/lifecycle/LifecycleManager');
 
 /**
- * Loads `.env` using Node.js native `process.loadEnvFile` when present.
+ * Loads `.env` safely (handling CRLF, spaces around `=`, quotes, and `#` comments)
+ * without overwriting variables already injected in `process.env`.
  */
-function loadNativeEnv(envPath = path.resolve(process.cwd(), '.env')) {
-  if (fs.existsSync(envPath) && typeof process.loadEnvFile === 'function') {
-    process.loadEnvFile(envPath);
+function loadNativeEnv(envPath) {
+  const candidates = envPath
+    ? [path.resolve(envPath)]
+    : [
+        path.resolve(__dirname, '..', '.env'),
+        path.resolve(process.cwd(), '.env'),
+      ];
+
+  const targetPath = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!targetPath) return false;
+
+  const raw = fs.readFileSync(targetPath, 'utf8');
+  for (const rawLine of raw.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('#')) continue;
+
+    const match = line.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_.-]*)\s*=\s*(.*)$/);
+    if (!match) continue;
+
+    const key = match[1];
+    let val = (match[2] || '').trim();
+
+    if (
+      (val.startsWith('"') && val.endsWith('"') && val.length >= 2) ||
+      (val.startsWith("'") && val.endsWith("'") && val.length >= 2)
+    ) {
+      val = val.slice(1, -1);
+    } else {
+      const hashIdx = val.indexOf(' #');
+      if (hashIdx !== -1) {
+        val = val.slice(0, hashIdx).trim();
+      }
+    }
+
+    if (process.env[key] === undefined) {
+      process.env[key] = val;
+    }
   }
+  return true;
 }
 
 /**
@@ -168,6 +204,9 @@ async function bootstrap(options = {}) {
   });
   sessionManagerRef = sessionManager;
   sessionManager.bindInboundPipeline();
+  if (options.restoreSessions !== false) {
+    await sessionManager.restorePersistedSessions();
+  }
 
   lifecycle.register('messaging-sessions', () => sessionManager.close());
   if (options.startWorker !== false) {
@@ -189,6 +228,7 @@ async function bootstrap(options = {}) {
     pdfService,
     promptPin,
     llmRouter,
+    agentEngine,
     sessionManager,
     pauseController,
   });
@@ -223,10 +263,18 @@ async function bootstrap(options = {}) {
 }
 
 if (require.main === module) {
-  bootstrap().catch((err) => {
-    console.error('[AUTONMAX_vNext_BOOT_FAILED]', err);
-    process.exit(1);
-  });
+  bootstrap()
+    .then(({ listenInfo, llmRouter }) => {
+      if (listenInfo) {
+        console.log(
+          `[AUTONMAX vNext] Server listening on http://localhost:${listenInfo.port} (host=${listenInfo.address}, groqModel=${llmRouter.models.groq})`
+        );
+      }
+    })
+    .catch((err) => {
+      console.error('[AUTONMAX_vNext_BOOT_FAILED]', err);
+      process.exit(1);
+    });
 }
 
 module.exports = { bootstrap, loadNativeEnv, assertProductionSecrets };

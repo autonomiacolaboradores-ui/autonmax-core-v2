@@ -111,6 +111,7 @@ class GatewayServer {
         promptPin: deps.promptPin,
         queueRepository: deps.queueRepository,
         llmRouter: deps.llmRouter,
+        agentEngine: deps.agentEngine,
       }),
       ...createAuthRoutes({
         partnerRepository: deps.partnerRepository,
@@ -373,10 +374,16 @@ class GatewayServer {
     const contentType =
       STATIC_MIME_TYPES[ext] || 'application/octet-stream';
     const data = fs.readFileSync(targetFile);
-    res.writeHead(200, {
+    const headers = {
       'Content-Type': contentType,
       'Content-Length': data.length,
-    });
+    };
+    if (['.html', '.js', '.mjs', '.css', '.webmanifest', '.json'].includes(ext)) {
+      headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+      headers['Pragma'] = 'no-cache';
+      headers['Expires'] = '0';
+    }
+    res.writeHead(200, headers);
     if (req.method === 'HEAD') {
       res.end();
     } else {

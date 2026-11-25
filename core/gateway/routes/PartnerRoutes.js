@@ -20,6 +20,7 @@ function createPartnerRoutes(deps) {
       personalityPrompt: partner.personality_prompt,
       welcomeMessage: partner.welcome_message,
       ownerJid: partner.owner_jid,
+      logoDataUrl: partner.logo_data_url || null,
       pdfFiles: partner.pdf_files,
       imageFiles: partner.image_files,
       businessRules: partner.business_rules,
@@ -60,6 +61,7 @@ function createPartnerRoutes(deps) {
           personalityPrompt: body.personalityPrompt ?? body.personality_prompt,
           welcomeMessage: body.welcomeMessage ?? body.welcome_message,
           ownerJid: body.ownerJid ?? body.owner_jid,
+          logoDataUrl: body.logoDataUrl ?? body.logo_data_url,
           pdfFiles: body.pdfFiles ?? body.pdf_files,
           imageFiles: body.imageFiles ?? body.image_files,
           businessRules:
@@ -74,6 +76,13 @@ function createPartnerRoutes(deps) {
               ? body.activeStatus === 'ACTIVE'
               : body.isActive,
         };
+
+        if (Array.isArray(patch.pdfFiles) && patch.pdfFiles.length > 5) {
+          return sendError(400, 'VALIDATION_ERROR', 'Máximo de 5 PDFs permitidos.');
+        }
+        if (Array.isArray(patch.imageFiles) && patch.imageFiles.length > 10) {
+          return sendError(400, 'VALIDATION_ERROR', 'Máximo de 10 imagens permitidas.');
+        }
 
         const updated = partnerRepository.update(params.partnerId, patch);
         return sendOk(toPartnerConfigDto(updated));

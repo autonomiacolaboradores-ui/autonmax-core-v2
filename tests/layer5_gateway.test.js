@@ -24,6 +24,7 @@ const { CustomerService } = require('../core/domain/CustomerService');
 const { PdfService } = require('../core/domain/PdfService');
 
 const { PromptPin } = require('../core/ai/PromptPin');
+const { LlmRouter } = require('../core/ai/LlmRouter');
 const { AgentEngine } = require('../core/ai/AgentEngine');
 
 const { WhatsAppBaileysAdapter } = require('../core/messaging/adapters/WhatsAppBaileysAdapter');
@@ -819,6 +820,20 @@ describe('Layer 5 — Gateway REST, Eventos/Webhooks & Boot E2E', () => {
       bookingService: new BookingService({ dbManager: fx.dbManager }),
       orderService: new OrderService({ dbManager: fx.dbManager }),
       pdfService: new PdfService(),
+      llmRouter: new LlmRouter({
+        groqApiKey: 'test-groq-key',
+        logger: { info() {}, warn() {}, error() {} },
+        fetchImpl: async () => ({
+          ok: true,
+          status: 200,
+          async text() {
+            return JSON.stringify({
+              choices: [{ message: { content: 'Online via mock Groq!' } }],
+            });
+          },
+        }),
+      }),
+      agentEngine: fx.agentEngine,
       sessionManager: fx.sessionManager,
       pauseController: new PauseController({
         conversationRepository: new ConversationRepository(fx.dbManager),
@@ -831,11 +846,13 @@ describe('Layer 5 — Gateway REST, Eventos/Webhooks & Boot E2E', () => {
     try {
       const rootRes = await fetch(`${info.baseUrl}/`);
       assert.equal(rootRes.status, 200);
+      assert.match(rootRes.headers.get('cache-control') || '', /no-store/);
       assert.match(await rootRes.text(), /AUTONMAX SPA/);
 
       const cssRes = await fetch(`${info.baseUrl}/src/theme/tokens.css`);
       assert.equal(cssRes.status, 200);
       assert.match(cssRes.headers.get('content-type'), /text\/css/);
+      assert.match(cssRes.headers.get('cache-control') || '', /no-store/);
 
       // SPA route fallback
       const spaRes = await fetch(`${info.baseUrl}/agenda/hoje`);
@@ -850,10 +867,200 @@ describe('Layer 5 — Gateway REST, Eventos/Webhooks & Boot E2E', () => {
       // Path traversal blocked
       const travRes = await fetch(`${info.baseUrl}/..%2Fpackage.json`);
       assert.equal(travRes.status, 403);
+
+      // Partner config PUT/GET with logoDataUrl + readiness checks.llm + POST /api/v1/ai/test
+      const regRes = await fetch(`${info.baseUrl}/api/v1/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: 'prt-onda1',
+          email: 'onda1@autonmax.dev',
+          password: 'Password@123',
+          displayName: 'Onda 1 Studio',
+        }),
+      });
+      assert.equal(regRes.status, 201);
+      const token = (await regRes.json()).data.token;
+
+      const putCfg = await fetch(`${info.baseUrl}/api/v1/partners/prt-onda1/config`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          logoDataUrl: 'data:image/png;base64,iVBORw0KGgo=',
+          personalityPrompt: 'Seja cordial.',
+        }),
+      });
+      assert.equal(putCfg.status, 200);
+      assert.equal((await putCfg.json()).data.logoDataUrl, 'data:image/png;base64,iVBORw0KGgo=');
+
+      const readRes = await fetch(`${info.baseUrl}/api/v1/readiness`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      assert.equal(readRes.status, 200);
+      const readJson = await readRes.json();
+      assert.ok(readJson.data.checks.llm);
+      assert.ok(readJson.data.checks.llm.models);
+
+      const aiTestRes = await fetch(`${info.baseUrl}/api/v1/ai/test`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ message: 'Oi' }),
+      });
+      assert.equal(aiTestRes.status, 200);
+      const aiTestJson = await aiTestRes.json();
+      assert.equal(aiTestJson.ok, true);
+      assert.equal(typeof aiTestJson.data.status, 'string');
     } finally {
       await staticServer.close();
       await fx.cleanup();
       fs.rmSync(tmpDist, { recursive: true, force: true });
+    }
+  });
+
+  test('7. E2E Salvar Alterações do Max: persiste TODOS os campos PME, textos puros, logo, PDFs e imagens no SQLite', async () => {
+    const fx = await createE2EFixture();
+    const { mountAutonmaxUI } = require('../app-web/src/config/FrontendInitConfig');
+
+    try {
+      const regRes = await fetch(`${fx.baseUrl}/api/v1/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: 'prt-full-pme',
+          email: 'fullpme@autonmax.dev',
+          password: 'Password@123',
+          displayName: 'Empresa Inicial',
+        }),
+      });
+      assert.equal(regRes.status, 201);
+      const { token } = (await regRes.json()).data;
+
+      const fullPayload = {
+        displayName: 'SoftHouse AUTONMAX',
+        storeSegment: 'Software & Automação',
+        ownerJid: '5511999887766',
+        welcomeMessage: 'Olá! Seja bem-vindo à SoftHouse AUTONMAX.',
+        logoDataUrl: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB',
+        personalityPrompt: 'Atenda de forma técnica, objetiva e cordial.',
+        businessRules: 'Suporte 24/7; garantia de 30 dias em licenças.',
+        workingHours: 'Segunda a Sexta das 08:00 às 19:00',
+        policies: 'Reembolso integral em até 7 dias corridos via Pix.',
+        pdfFiles: [
+          { name: 'tabela_planos.pdf', dataUrl: 'data:application/pdf;base64,JVBERi0xLjQ=' },
+          { name: 'manual_implantacao.pdf', dataUrl: 'data:application/pdf;base64,JVBERi0xLjU=' },
+        ],
+        imageFiles: [
+          { name: 'tela_dashboard.png', dataUrl: 'data:image/png;base64,AAAA' },
+          { name: 'fluxo_whatsapp.jpg', dataUrl: 'data:image/jpeg;base64,BBBB' },
+          { name: 'arquitetura.png', dataUrl: 'data:image/png;base64,CCCC' },
+        ],
+        activeStatus: 'ACTIVE',
+      };
+
+      const putRes = await fetch(`${fx.baseUrl}/api/v1/partners/prt-full-pme/config`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(fullPayload),
+      });
+      assert.equal(putRes.status, 200);
+      const putJson = await putRes.json();
+      assert.equal(putJson.ok, true);
+
+      // Re-fetch via GET (simulando F5 / recarga da página)
+      const getRes = await fetch(`${fx.baseUrl}/api/v1/partners/prt-full-pme/config`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      assert.equal(getRes.status, 200);
+      const saved = (await getRes.json()).data;
+
+      assert.equal(saved.displayName, fullPayload.displayName);
+      assert.equal(saved.storeSegment, fullPayload.storeSegment);
+      assert.equal(saved.ownerJid, fullPayload.ownerJid);
+      assert.equal(saved.welcomeMessage, fullPayload.welcomeMessage);
+      assert.equal(saved.logoDataUrl, fullPayload.logoDataUrl);
+      assert.equal(saved.personalityPrompt, fullPayload.personalityPrompt);
+      assert.equal(saved.businessRules, fullPayload.businessRules);
+      assert.equal(saved.workingHours, fullPayload.workingHours);
+      assert.equal(saved.policies, fullPayload.policies);
+      assert.equal(saved.activeStatus, 'ACTIVE');
+      assert.equal(saved.pdfFiles.length, 2);
+      assert.equal(saved.pdfFiles[0].name, 'tabela_planos.pdf');
+      assert.equal(saved.pdfFiles[1].name, 'manual_implantacao.pdf');
+      assert.equal(saved.imageFiles.length, 3);
+      assert.equal(saved.imageFiles[0].name, 'tela_dashboard.png');
+      assert.equal(saved.imageFiles[2].name, 'arquitetura.png');
+
+      // Confirma persistência direta no SQLite
+      const dbRow = fx.partnerRepository.findById('prt-full-pme');
+      assert.equal(dbRow.display_name, fullPayload.displayName);
+      assert.equal(dbRow.store_segment, fullPayload.storeSegment);
+      assert.equal(dbRow.owner_jid, fullPayload.ownerJid);
+      assert.equal(dbRow.welcome_message, fullPayload.welcomeMessage);
+      assert.equal(dbRow.logo_data_url, fullPayload.logoDataUrl);
+      assert.equal(dbRow.personality_prompt, fullPayload.personalityPrompt);
+      assert.equal(dbRow.business_rules, fullPayload.businessRules);
+      assert.equal(dbRow.working_hours, fullPayload.workingHours);
+      assert.equal(dbRow.policies, fullPayload.policies);
+      assert.equal(dbRow.pdf_files.length, 2);
+      assert.equal(dbRow.image_files.length, 3);
+      assert.equal(dbRow.is_active, 1);
+
+      // Valida renderização completa no DashboardView após reload
+      const ui = mountAutonmaxUI(
+        { innerHTML: '', style: { setProperty() {} } },
+        { shell_enabled: false, ui_mode: 'guided' }
+      );
+      try {
+        const dashHtml = ui.render({
+          dashboard: {
+            partner: saved,
+            pmeSaveFeedback: {
+              ok: true,
+              message: 'Alterações do Max salvas no banco com sucesso!',
+            },
+          },
+        });
+        assert.match(dashHtml, /SoftHouse AUTONMAX/);
+        assert.match(dashHtml, /Software &amp; Automação/);
+        assert.match(dashHtml, /5511999887766/);
+        assert.match(dashHtml, /Seja bem-vindo à SoftHouse AUTONMAX/);
+        assert.match(dashHtml, /Atenda de forma técnica/);
+        assert.match(dashHtml, /Suporte 24\/7/);
+        assert.match(dashHtml, /Segunda a Sexta das 08:00 às 19:00/);
+        assert.match(dashHtml, /Reembolso integral em até 7 dias/);
+        assert.match(dashHtml, /tabela_planos\.pdf/);
+        assert.match(dashHtml, /manual_implantacao\.pdf/);
+        assert.match(dashHtml, /tela_dashboard\.png/);
+        assert.match(dashHtml, /arquitetura\.png/);
+        assert.match(dashHtml, /PDFs 2\/5 & Imagens 3\/10/);
+        assert.match(dashHtml, /data-pme-save-feedback="true"/);
+      } finally {
+        ui.unmount();
+      }
+
+      // Valida limite >5 PDFs retorna 400
+      const overPdfRes = await fetch(`${fx.baseUrl}/api/v1/partners/prt-full-pme/config`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          pdfFiles: Array.from({ length: 6 }, (_, i) => ({ name: `p${i}.pdf`, dataUrl: 'x' })),
+        }),
+      });
+      assert.equal(overPdfRes.status, 400);
+    } finally {
+      await fx.cleanup();
     }
   });
 });

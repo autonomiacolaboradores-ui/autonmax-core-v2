@@ -46,25 +46,83 @@ function createChannelRoutes(deps) {
           return sendError(403, 'FORBIDDEN', 'Acesso negado para este parceiro.');
         }
 
-        const entry = await sessionManager.connectSession(partnerId, lineId);
-        const status = await sessionManager.channelAdapter.getStatus(entry.sessionKey);
-        return sendOk({ ...entry, status }, 201);
+        const adapter = sessionManager.channelAdapter;
+        const candidateKey =
+          lineId === 'default' ? `pme:${partnerId}` : `pme:${partnerId}:${lineId}`;
+        const currentStatus = await adapter.getStatus(candidateKey);
+        const entry =
+          currentStatus === 'CONNECTED'
+            ? sessionManager.createOrGetSession(partnerId, lineId)
+            : await sessionManager.connectSession(partnerId, lineId);
+
+        const status = await adapter.getStatus(entry.sessionKey);
+        const qr = await adapter.getQr(entry.sessionKey);
+        const diag =
+          typeof adapter.getSessionDiagnostics === 'function'
+            ? adapter.getSessionDiagnostics(entry.sessionKey)
+            : null;
+
+        return sendOk(
+          {
+            ...entry,
+            status: diag?.status || status,
+            qrCodeBase64: qr?.qrBase64 || null,
+            rawText: qr?.rawText || null,
+            phoneNumber: diag?.phoneNumber || null,
+            lastEventTime: diag?.lastEventTime || null,
+          },
+          201
+        );
       },
     },
     {
       method: 'GET',
       path: '/api/v1/channels/sessions/:sessionKey/qr',
-      handler: async ({ auth, params, sendOk, sendError }) => {
+      handler: async ({ auth, params, query, sendOk, sendError }) => {
         const parsed = authorizeSessionKey(auth, params.sessionKey, sendError);
         if (!parsed) return;
 
-        const qr = await sessionManager.channelAdapter.getQr(parsed.canonicalKey);
-        const status = await sessionManager.channelAdapter.getStatus(parsed.canonicalKey);
+        const getQueryParam = (name) => {
+          if (!query) return undefined;
+          if (typeof query.get === 'function') return query.get(name);
+          return query[name];
+        };
+
+        const force = String(getQueryParam('force') || '').toLowerCase() === 'true';
+        const wait = String(getQueryParam('wait') || '').toLowerCase() === 'true';
+        const rawTimeout = Number(getQueryParam('timeoutMs'));
+        const timeoutMs =
+          Number.isFinite(rawTimeout) && rawTimeout > 0
+            ? Math.min(rawTimeout, 30000)
+            : 8000;
+
+        const adapter = sessionManager.channelAdapter;
+        if (force) {
+          if (typeof adapter.forceResetPairing === 'function') {
+            await adapter.forceResetPairing(parsed.canonicalKey);
+          } else if (typeof adapter.forceReconnect === 'function') {
+            await adapter.forceReconnect(parsed.canonicalKey);
+          }
+        }
+
+        if (wait && typeof adapter.waitForQr === 'function') {
+          await adapter.waitForQr(parsed.canonicalKey, { timeoutMs });
+        }
+
+        const qr = await adapter.getQr(parsed.canonicalKey);
+        const status = await adapter.getStatus(parsed.canonicalKey);
+        const diag =
+          typeof adapter.getSessionDiagnostics === 'function'
+            ? adapter.getSessionDiagnostics(parsed.canonicalKey)
+            : null;
+
         return sendOk({
           sessionKey: parsed.canonicalKey,
-          status,
+          status: diag?.status || status,
           qrCodeBase64: qr?.qrBase64 || null,
           rawText: qr?.rawText || null,
+          phoneNumber: diag?.phoneNumber || null,
+          lastEventTime: diag?.lastEventTime || null,
         });
       },
     },

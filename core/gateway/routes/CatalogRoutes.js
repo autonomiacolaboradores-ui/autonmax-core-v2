@@ -21,6 +21,16 @@ function toCatalogDto(item) {
     versionHash: item.version_hash,
     version_hash: item.version_hash,
     active: Number(item.active),
+    trackStock: Number(item.track_stock ?? 0) === 1,
+    track_stock: Number(item.track_stock ?? 0),
+    stockQuantity:
+      item.stock_quantity !== null && item.stock_quantity !== undefined
+        ? Number(item.stock_quantity)
+        : null,
+    stock_quantity:
+      item.stock_quantity !== null && item.stock_quantity !== undefined
+        ? Number(item.stock_quantity)
+        : null,
     updatedAt: item.updated_at,
   };
 }

@@ -311,6 +311,26 @@ describe('Layer 4 — Mensageria Resiliente, Debouncer & Fila Anti-Ban', () => {
         'Já falei com o atendente que prefiro sexta-feira.'
       );
 
+      // Outra conversa ativa do mesmo parceiro continua sendo respondida normalmente pela IA
+      const otherChatId = '5511999990004@s.whatsapp.net';
+      const otherRes = await fx.sessionManager.handleIncomingEvent({
+        eventKey: 'wa:other-active-1',
+        msgId: 'other-active-1',
+        sessionKey: 'pme:usr_1',
+        partnerId: fx.partner.id,
+        channel: 'whatsapp',
+        chatId: otherChatId,
+        text: 'Olá, quero agendar um horário',
+      });
+      assert.equal(otherRes.ok, true);
+      assert.notEqual(otherRes.paused, true);
+      assert.equal(agentCalled, 1);
+      assert.equal(fx.queueRepo.fetchDueOutbox().length, 1);
+      assert.equal(
+        fx.conversationRepo.findById(conv.id, { partnerId: fx.partner.id }).is_paused,
+        1
+      );
+
       // Resume AI: next message consumes paused context and calls AgentEngine
       fx.pauseController.resume({
         partnerId: fx.partner.id,
@@ -335,7 +355,7 @@ describe('Layer 4 — Mensageria Resiliente, Debouncer & Fila Anti-Ban', () => {
         text: 'Pode continuar agora',
       });
 
-      assert.equal(agentCalled, 1);
+      assert.equal(agentCalled, 2);
       assert.match(receivedTurnText, /prefiro sexta-feira/);
       assert.match(receivedTurnText, /Pode continuar agora/);
     } finally {
@@ -500,6 +520,318 @@ describe('Layer 4 — Mensageria Resiliente, Debouncer & Fila Anti-Ban', () => {
       await fx.sessionManager.disconnectSession(sessionKey);
       assert.ok(listenerRemoveCalls >= 1);
       assert.equal(await baileysAdapter.getStatus(sessionKey), 'DISCONNECTED');
+
+      // 401 / device_removed wipes stale baileys_auth creds and stops reconnect loop
+      const { authDir } = fx.sessionManager.resolveSessionPaths(sessionKey);
+      fs.mkdirSync(authDir, { recursive: true });
+      fs.writeFileSync(path.join(authDir, 'creds.json'), '{"me":{"id":"old"}}');
+      fs.writeFileSync(path.join(authDir, 'active_context.json'), '{"keep":true}');
+      await fx.sessionManager.connectSession('usr_1', 'line_1');
+      mockSock.ev.emit('connection.update', {
+        connection: 'close',
+        lastDisconnect: {
+          error: Object.assign(new Error('Stream Errored (conflict)'), {
+            output: { statusCode: 401 },
+          }),
+        },
+      });
+      await new Promise((r) => setTimeout(r, 15));
+      assert.equal(await baileysAdapter.getStatus(sessionKey), 'DISCONNECTED');
+      assert.equal(fs.existsSync(path.join(authDir, 'creds.json')), false);
+      assert.equal(fs.existsSync(path.join(authDir, 'active_context.json')), true);
+
+      // Persisted creds.json is restored automatically after restart
+      fs.writeFileSync(path.join(authDir, 'creds.json'), '{"me":{"id":"restored"}}');
+      const restored = await fx.sessionManager.restorePersistedSessions();
+      assert.ok(restored.includes(sessionKey));
+      mockSock.ev.emit('connection.update', { connection: 'open' });
+      assert.equal(await baileysAdapter.getStatus(sessionKey), 'CONNECTED');
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  test('6. QR refs attempts ended -> STANDBY sem loop de reconexão', async () => {
+    let makeSocketCalls = 0;
+    const mockSock = {
+      user: null,
+      ev: new EventEmitter(),
+      ws: { close() {} },
+      end() {},
+    };
+
+    const adapter = new WhatsAppBaileysAdapter({
+      retryDelays: [10, 10],
+      baileysLoader: () => ({
+        makeWASocket: () => {
+          makeSocketCalls += 1;
+          return mockSock;
+        },
+        useMultiFileAuthState: async () => ({
+          state: { creds: {}, keys: {} },
+          saveCreds: async () => {},
+        }),
+        DisconnectReason: { loggedOut: 401 },
+        Browsers: { ubuntu: (b) => ['Ubuntu', b, '22.04'] },
+      }),
+      qrCodeLoader: () => ({
+        async toDataURL(qr) {
+          return `data:image/png;base64,${Buffer.from(qr).toString('base64')}`;
+        },
+      }),
+    });
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autonmax-l4-qr-'));
+    adapter.authDirResolver = (sk) => path.join(tmpDir, sk.replace(/:/g, '_'));
+
+    try {
+      const sessionKey = 'pme:usr_1';
+      await adapter.connect(sessionKey);
+      assert.equal(makeSocketCalls, 1);
+
+      mockSock.ev.emit('connection.update', { qr: 'QR_1' });
+      await new Promise((r) => setTimeout(r, 10));
+      assert.equal(await adapter.getStatus(sessionKey), 'PAIRING_READY');
+      assert.ok(await adapter.getQr(sessionKey));
+
+      // Exhaust QR attempts
+      mockSock.ev.emit('connection.update', {
+        connection: 'close',
+        lastDisconnect: {
+          error: new Error('QR refs attempts ended'),
+        },
+      });
+      await new Promise((r) => setTimeout(r, 40));
+
+      assert.equal(await adapter.getStatus(sessionKey), 'STANDBY');
+      assert.equal(await adapter.getQr(sessionKey), null);
+      assert.equal(makeSocketCalls, 1, 'Must NOT auto-reconnect once in STANDBY');
+
+      const diag = adapter.getSessionDiagnostics(sessionKey);
+      assert.equal(diag.status, 'STANDBY');
+      assert.equal(diag.hasQr, false);
+      assert.ok(typeof diag.lastEventTime === 'number');
+    } finally {
+      await adapter.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('7. Bad MAC purga credenciais do authDir preservando metadados e agenda reconexão limpa', async () => {
+    let makeSocketCalls = 0;
+    const mockSocks = [];
+
+    const adapter = new WhatsAppBaileysAdapter({
+      baileysLoader: () => ({
+        makeWASocket: () => {
+          makeSocketCalls += 1;
+          const sock = {
+            user: null,
+            ev: new EventEmitter(),
+            ws: { close() {} },
+            end() {},
+          };
+          mockSocks.push(sock);
+          return sock;
+        },
+        useMultiFileAuthState: async () => ({
+          state: { creds: {}, keys: {} },
+          saveCreds: async () => {},
+        }),
+        DisconnectReason: { loggedOut: 401 },
+        Browsers: { ubuntu: (b) => ['Ubuntu', b, '22.04'] },
+      }),
+      qrCodeLoader: () => ({
+        async toDataURL(qr) {
+          return `data:image/png;base64,${Buffer.from(qr).toString('base64')}`;
+        },
+      }),
+    });
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autonmax-l4-badmac-'));
+    const authDir = path.join(tmpDir, 'pme_usr_1', 'baileys_auth');
+    adapter.authDirResolver = () => authDir;
+
+    try {
+      const sessionKey = 'pme:usr_1';
+      await adapter.connect(sessionKey);
+      fs.writeFileSync(path.join(authDir, 'creds.json'), '{"bad":true}');
+      fs.writeFileSync(path.join(authDir, 'app-state-sync-key.json'), '{"bad":true}');
+      fs.writeFileSync(path.join(authDir, 'session.json'), '{"keep":true}');
+      fs.writeFileSync(path.join(authDir, 'active_context.json'), '{"keep":true}');
+
+      mockSocks[0].ev.emit('connection.update', {
+        connection: 'close',
+        lastDisconnect: {
+          error: new Error('Bad MAC Error: Decryption failed'),
+        },
+      });
+      await new Promise((r) => setTimeout(r, 20));
+
+      assert.equal(await adapter.getStatus(sessionKey), 'RECONNECTING');
+      assert.equal(fs.existsSync(path.join(authDir, 'creds.json')), false);
+      assert.equal(fs.existsSync(path.join(authDir, 'app-state-sync-key.json')), false);
+      assert.equal(fs.existsSync(path.join(authDir, 'session.json')), true);
+      assert.equal(fs.existsSync(path.join(authDir, 'active_context.json')), true);
+
+      // Clean restart scheduled in 2s; closing adapter cancels timer cleanly
+      assert.equal(makeSocketCalls, 1);
+      await adapter.disconnect(sessionKey);
+      assert.equal(await adapter.getStatus(sessionKey), 'DISCONNECTED');
+    } finally {
+      await adapter.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('8. forceResetPairing protege contra concorrência e waitForQr resolve ao chegar QR', async () => {
+    let makeSocketCalls = 0;
+    let currentSock = null;
+
+    const adapter = new WhatsAppBaileysAdapter({
+      baileysLoader: () => ({
+        makeWASocket: () => {
+          makeSocketCalls += 1;
+          currentSock = {
+            user: { id: '5511988887777:2@s.whatsapp.net' },
+            ev: new EventEmitter(),
+            ws: { close() {} },
+            end() {},
+          };
+          return currentSock;
+        },
+        useMultiFileAuthState: async () => {
+          await new Promise((r) => setTimeout(r, 20));
+          return {
+            state: { creds: {}, keys: {} },
+            saveCreds: async () => {},
+          };
+        },
+        DisconnectReason: { loggedOut: 401 },
+        Browsers: { ubuntu: (b) => ['Ubuntu', b, '22.04'] },
+      }),
+      qrCodeLoader: () => ({
+        async toDataURL(qr) {
+          return `data:image/png;base64,${Buffer.from(qr).toString('base64')}`;
+        },
+      }),
+    });
+
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autonmax-l4-reset-'));
+    const authDir = path.join(tmpDir, 'pme_usr_1', 'baileys_auth');
+    adapter.authDirResolver = () => authDir;
+
+    try {
+      const sessionKey = 'pme:usr_1';
+      fs.mkdirSync(authDir, { recursive: true });
+      fs.writeFileSync(path.join(authDir, 'creds.json'), '{"old":true}');
+
+      // Concurrent forceResetPairing calls: only first executes
+      const [r1, r2] = await Promise.all([
+        adapter.forceResetPairing(sessionKey),
+        adapter.forceResetPairing(sessionKey),
+      ]);
+      assert.equal(r1.ok, true);
+      assert.equal(r2.inProgress, true);
+      assert.equal(makeSocketCalls, 1);
+      assert.equal(fs.existsSync(path.join(authDir, 'creds.json')), false);
+
+      // waitForQr resolves as soon as QR arrives
+      const waitPromise = adapter.waitForQr(sessionKey, { timeoutMs: 2000, pollMs: 15 });
+      setTimeout(() => {
+        currentSock.ev.emit('connection.update', { qr: 'NEW_PAIRING_QR' });
+      }, 30);
+      const waitRes = await waitPromise;
+
+      assert.equal(waitRes.timedOut, false);
+      assert.equal(waitRes.status, 'PAIRING_READY');
+      assert.equal(waitRes.rawText, 'NEW_PAIRING_QR');
+      assert.ok(waitRes.qrBase64.startsWith('data:image/png;base64,'));
+
+      // forceReconnect preserves creds.json
+      fs.writeFileSync(path.join(authDir, 'creds.json'), '{"keep":true}');
+      await adapter.forceReconnect(sessionKey);
+      assert.equal(fs.existsSync(path.join(authDir, 'creds.json')), true);
+      assert.equal(makeSocketCalls, 2);
+
+      currentSock.ev.emit('connection.update', { connection: 'open' });
+      const diag = adapter.getSessionDiagnostics(sessionKey);
+      assert.equal(diag.status, 'CONNECTED');
+      assert.equal(diag.phoneNumber, '5511988887777');
+    } finally {
+      await adapter.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('9. Soft-Pause Global via SQLite (partners.is_active = 0) mantém socket, bloqueia AgentEngine e acumula contexto', async () => {
+    let agentCalls = 0;
+    let lastAgentInput = '';
+    const mockAgent = {
+      async processTurn(params) {
+        agentCalls += 1;
+        lastAgentInput = params.message;
+        return { ok: true, text: 'Max retomado!' };
+      },
+    };
+
+    const fx = createMessagingFixture({
+      agentEngine: mockAgent,
+      debounceWindowMs: 20,
+    });
+
+    try {
+      const sessionKey = 'pme:usr_1';
+      await fx.sessionManager.connectSession(fx.partner.id);
+      assert.equal(await fx.adapter.getStatus(sessionKey), 'CONNECTED');
+
+      // Pause partner globally in SQLite (Hero Card toggle)
+      fx.partnerRepo.update(fx.partner.id, { isActive: false });
+      const pausedPartner = fx.partnerRepo.findById(fx.partner.id);
+      assert.equal(pausedPartner.is_active, 0);
+
+      const chatId = '5511977776666@s.whatsapp.net';
+      const res1 = await fx.sessionManager.handleIncomingEvent({
+        eventKey: 'wa:global-pause-1',
+        msgId: 'global-pause-1',
+        sessionKey,
+        partnerId: fx.partner.id,
+        channel: 'whatsapp',
+        chatId,
+        pushName: 'Marcos',
+        text: 'Oi, quero remarcar para terça.',
+      });
+
+      assert.equal(res1.paused, true);
+      assert.equal(res1.globalPaused, true);
+      assert.equal(agentCalls, 0);
+      assert.equal(await fx.adapter.getStatus(sessionKey), 'CONNECTED');
+      assert.equal(fx.queueRepo.isEventProcessed('wa:global-pause-1'), true);
+
+      const conv = fx.conversationRepo.findByExternalChat(
+        fx.partner.id,
+        'whatsapp',
+        chatId
+      );
+      assert.equal(conv.paused_context.length, 1);
+      assert.equal(conv.paused_context[0].text, 'Oi, quero remarcar para terça.');
+
+      // Reactivate partner in SQLite -> next message resumes with accumulated context
+      fx.partnerRepo.update(fx.partner.id, { isActive: true });
+      const res2 = await fx.sessionManager.handleIncomingEvent({
+        eventKey: 'wa:global-resume-2',
+        msgId: 'global-resume-2',
+        sessionKey,
+        partnerId: fx.partner.id,
+        channel: 'whatsapp',
+        chatId,
+        text: 'Tem horário às 15h?',
+      });
+
+      assert.equal(res2.ok, true);
+      assert.equal(agentCalls, 1);
+      assert.match(lastAgentInput, /remarcar para terça/);
+      assert.match(lastAgentInput, /Tem horário às 15h/);
     } finally {
       await fx.cleanup();
     }

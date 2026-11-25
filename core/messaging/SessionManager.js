@@ -200,6 +200,22 @@ class SessionManager {
 
     const { sanitizedKey, sessionDir, authDir } = this.resolveSessionPaths(sessionKey);
     fs.mkdirSync(authDir, { recursive: true });
+    try {
+      fs.writeFileSync(
+        path.join(sessionDir, 'session.json'),
+        JSON.stringify(
+          {
+            sessionKey,
+            partnerId,
+            lineId: String(lineId || 'default'),
+          },
+          null,
+          2
+        )
+      );
+    } catch {
+      // Ignore metadata write failure on read-only paths
+    }
 
     const entry = {
       sessionKey,
@@ -221,6 +237,23 @@ class SessionManager {
   async connectSession(partnerId, lineId = 'default') {
     const entry = this.createOrGetSession(partnerId, lineId);
     await this.channelAdapter.connect(entry.sessionKey);
+    return entry;
+  }
+
+  /**
+   * Forces a clean pairing reset (wiping credentials and generating a fresh QR)
+   * for a partner session line.
+   * @param {string} partnerId
+   * @param {string} [lineId='default']
+   */
+  async forceResetSession(partnerId, lineId = 'default') {
+    const entry = this.createOrGetSession(partnerId, lineId);
+    if (typeof this.channelAdapter.forceResetPairing === 'function') {
+      await this.channelAdapter.forceResetPairing(entry.sessionKey);
+    } else {
+      await this.disconnectSession(entry.sessionKey, { wipeAuth: true });
+      await this.channelAdapter.connect(entry.sessionKey);
+    }
     return entry;
   }
 
@@ -319,8 +352,16 @@ class SessionManager {
       externalChatId: chatId,
     });
 
-    // Soft-Pause: AI stays silent, conversation remains live, messages recorded in SQLite JSON
-    if (this.pauseController.isPaused({ partnerId, conversationId: conversation.id })) {
+    // Soft-Pause (Global via partners.is_active === 0 OR per-conversation):
+    // AI stays silent, WhatsApp socket stays live, messages recorded in SQLite JSON
+    const partner = this.partnerRepository.findById(partnerId);
+    const isGlobalPartnerPaused = Boolean(partner && Number(partner.is_active) === 0);
+    const isConversationPaused = this.pauseController.isPaused({
+      partnerId,
+      conversationId: conversation.id,
+    });
+
+    if (isGlobalPartnerPaused || isConversationPaused) {
       const pauseText = event.sttFailed
         ? '[áudio não transcrito]'
         : String(event.text || '').trim();
@@ -335,7 +376,12 @@ class SessionManager {
       if (eventKey) {
         this.queueRepository.markEventProcessed(eventKey, sessionKey);
       }
-      return { ok: true, paused: true, conversationId: conversation.id };
+      return {
+        ok: true,
+        paused: true,
+        globalPaused: isGlobalPartnerPaused,
+        conversationId: conversation.id,
+      };
     }
 
     // Audio STT failed: never silent-drop — enqueue polite fallback response immediately
@@ -470,6 +516,51 @@ class SessionManager {
       outbox,
       consolidatedCount: batch.count,
     };
+  }
+
+  /**
+   * Restores previously paired sessions (those with `baileys_auth/creds.json`)
+   * from `this.sessionsDir` after an app restart.
+   * @returns {Promise<string[]>} Restored sessionKeys
+   */
+  async restorePersistedSessions() {
+    if (!fs.existsSync(this.sessionsDir)) return [];
+    const restored = [];
+    const entries = fs.readdirSync(this.sessionsDir, { withFileTypes: true });
+    for (const dirEntry of entries) {
+      if (!dirEntry.isDirectory()) continue;
+      const sessionDir = path.join(this.sessionsDir, dirEntry.name);
+      const credsPath = path.join(sessionDir, 'baileys_auth', 'creds.json');
+      if (!fs.existsSync(credsPath)) continue;
+
+      let meta = null;
+      const metaPath = path.join(sessionDir, 'session.json');
+      if (fs.existsSync(metaPath)) {
+        try {
+          meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+        } catch {
+          meta = null;
+        }
+      }
+
+      if (!meta?.partnerId && dirEntry.name.startsWith('pme_')) {
+        const rawPartnerId = dirEntry.name.slice(4);
+        const partner = this.partnerRepository.findById(rawPartnerId);
+        if (partner) {
+          meta = { partnerId: partner.id, lineId: 'default' };
+        }
+      }
+
+      if (!meta?.partnerId) continue;
+
+      try {
+        const session = await this.connectSession(meta.partnerId, meta.lineId || 'default');
+        restored.push(session.sessionKey);
+      } catch {
+        // Ignore inactive/missing partners or transient startup errors
+      }
+    }
+    return restored;
   }
 
   /**

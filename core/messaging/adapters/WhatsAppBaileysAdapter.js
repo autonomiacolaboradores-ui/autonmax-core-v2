@@ -108,6 +108,9 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
         retryCount: 0,
         reconnectAttempts: 0,
         isInitializing: false,
+        isPairingReset: false,
+        phoneNumber: null,
+        lastEventTime: Date.now(),
         stabilityTimer: null,
         reconnectTimer: null,
         recentSentTexts: new Set(),
@@ -116,6 +119,40 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
       this._sessions.set(sessionKey, st);
     }
     return st;
+  }
+
+  /**
+   * Resolves the filesystem auth directory for `sessionKey`.
+   * @private
+   */
+  _resolveAuthDir(sessionKey) {
+    return this.authDirResolver
+      ? this.authDirResolver(sessionKey)
+      : path.resolve(
+          process.cwd(),
+          'workspace',
+          'sessions',
+          String(sessionKey).replace(/[^a-zA-Z0-9_-]/g, '_'),
+          'baileys_auth'
+        );
+  }
+
+  /**
+   * Purges Baileys credential files in `authDir` while preserving session metadata.
+   * @private
+   */
+  _purgeAuthCredentials(authDir) {
+    if (!authDir || !fs.existsSync(authDir)) return;
+    const preserved = new Set(['active_context.json', 'session.json']);
+    for (const file of fs.readdirSync(authDir)) {
+      if (!preserved.has(file)) {
+        try {
+          fs.rmSync(path.join(authDir, file), { recursive: true, force: true });
+        } catch {
+          // Ignore individual file removal errors.
+        }
+      }
+    }
   }
 
   /**
@@ -177,20 +214,18 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
    */
   async connect(sessionKey) {
     const st = this._ensureState(sessionKey);
-    if (st.isInitializing || st.status === 'CONNECTED' || st.status === 'STANDBY') {
+    if (st.isInitializing || st.status === 'CONNECTED') {
       return;
+    }
+    if (st.status === 'STANDBY') {
+      st.status = 'DISCONNECTED';
+      st.retryCount = 0;
+      st.reconnectAttempts = 0;
     }
 
     st.isInitializing = true;
-    const authDir = this.authDirResolver
-      ? this.authDirResolver(sessionKey)
-      : path.resolve(
-          process.cwd(),
-          'workspace',
-          'sessions',
-          String(sessionKey).replace(/[^a-zA-Z0-9_-]/g, '_'),
-          'baileys_auth'
-        );
+    st.lastEventTime = Date.now();
+    const authDir = this._resolveAuthDir(sessionKey);
 
     fs.mkdirSync(authDir, { recursive: true });
 
@@ -225,6 +260,7 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
       st.sock = sock;
 
       sock.ev.on('creds.update', async () => {
+        st.lastEventTime = Date.now();
         try {
           await saveCreds();
         } catch (err) {
@@ -239,6 +275,7 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
       sock.ev.on('messages.set', () => {});
 
       sock.ev.on('messages.upsert', async (upsert) => {
+        st.lastEventTime = Date.now();
         if (!upsert || upsert.type !== 'notify' || !Array.isArray(upsert.messages)) {
           return;
         }
@@ -361,9 +398,11 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
    */
   async _handleConnectionUpdate(st, update, DisconnectReason, authDir) {
     const { connection, lastDisconnect, qr } = update || {};
+    st.lastEventTime = Date.now();
 
     if (qr && st.status !== 'STANDBY') {
       st.lastRawQr = qr;
+      st.isPairingReset = false;
       st.status = 'PAIRING_READY';
       try {
         st.lastQrBase64 = await this.encodeQrDataUrl(qr);
@@ -385,9 +424,14 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
     if (connection === 'open') {
       st.status = 'CONNECTED';
       st.isInitializing = false;
+      st.isPairingReset = false;
       st.lastQrBase64 = null;
       st.lastRawQr = null;
       st.retryCount = 0;
+      const connectedDigits = extractJidDigits(st.sock?.user?.id);
+      if (connectedDigits) {
+        st.phoneNumber = connectedDigits;
+      }
 
       if (st.stabilityTimer) clearTimeout(st.stabilityTimer);
       st.stabilityTimer = setTimeout(() => {
@@ -414,10 +458,15 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
 
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const errMsg = String(
-        lastDisconnect?.error?.message || lastDisconnect?.error || ''
+        lastDisconnect?.error?.message ||
+          lastDisconnect?.error?.stack ||
+          lastDisconnect?.error ||
+          ''
       );
       const isLoggedOut =
-        DisconnectReason && statusCode === DisconnectReason.loggedOut;
+        (DisconnectReason && statusCode === DisconnectReason.loggedOut) ||
+        statusCode === 401 ||
+        /device_removed|Stream Errored \(conflict\)/i.test(errMsg);
       const isQrExhausted = /QR refs attempts/i.test(errMsg);
       const isCorruptedSession =
         /Bad MAC|No matching sessions|Decryption failed/i.test(errMsg);
@@ -425,7 +474,12 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
       this._teardownSocket(st);
 
       if (isQrExhausted || isLoggedOut) {
+        if (isLoggedOut) {
+          this._purgeAuthCredentials(authDir);
+          st.phoneNumber = null;
+        }
         st.status = isQrExhausted ? 'STANDBY' : 'DISCONNECTED';
+        st.isPairingReset = false;
         st.lastQrBase64 = null;
         st.lastRawQr = null;
         st.retryCount = 0;
@@ -444,14 +498,33 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
         return;
       }
 
-      if (isCorruptedSession && fs.existsSync(authDir)) {
-        for (const file of fs.readdirSync(authDir)) {
-          if (file !== 'active_context.json') {
-            fs.rmSync(path.join(authDir, file), { recursive: true, force: true });
-          }
-        }
+      if (isCorruptedSession) {
+        this._purgeAuthCredentials(authDir);
         st.retryCount = 0;
         st.reconnectAttempts = 0;
+        st.lastQrBase64 = null;
+        st.lastRawQr = null;
+        st.isInitializing = false;
+        st.status = 'RECONNECTING';
+
+        this.onConnectionChange?.({
+          sessionKey: st.sessionKey,
+          status: 'RECONNECTING',
+          reason: errMsg,
+        });
+
+        st.reconnectTimer = setTimeout(() => {
+          st.reconnectTimer = null;
+          if (st.status !== 'STANDBY' && st.status !== 'DISCONNECTED') {
+            this.connect(st.sessionKey).catch((err) => {
+              this.logger.warn?.(`[WA:${st.sessionKey}] corrupted session restart failed:`, err?.message);
+            });
+          }
+        }, 2000);
+        if (typeof st.reconnectTimer.unref === 'function') {
+          st.reconnectTimer.unref();
+        }
+        return;
       }
 
       if (st.reconnectAttempts >= this.maxConsecutiveFailures) {
@@ -490,6 +563,153 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
   }
 
   /**
+   * Non-destructive reconnect preserving `baileys_auth/creds.json`.
+   * @param {string} sessionKey
+   */
+  async forceReconnect(sessionKey) {
+    const st = this._ensureState(sessionKey);
+    st.isInitializing = false;
+    st.isPairingReset = false;
+    st.status = 'DISCONNECTED';
+    st.retryCount = 0;
+    st.reconnectAttempts = 0;
+    st.lastEventTime = Date.now();
+    this._teardownSocket(st, 'FORCE_RECONNECT');
+    await this.connect(sessionKey);
+  }
+
+  /**
+   * Explicit pairing reset with anti-concurrency guard: purges session auth credentials
+   * (preserving metadata) and starts a fresh connection to generate a new QR code.
+   * @param {string} sessionKey
+   */
+  async forceResetPairing(sessionKey) {
+    const st = this._ensureState(sessionKey);
+    if (st.isPairingReset) {
+      return { ok: false, inProgress: true, sessionKey };
+    }
+    st.isPairingReset = true;
+    st.isInitializing = false;
+    st.status = 'DISCONNECTED';
+    st.retryCount = 0;
+    st.reconnectAttempts = 0;
+    st.lastRawQr = null;
+    st.lastQrBase64 = null;
+    st.phoneNumber = null;
+    st.lastEventTime = Date.now();
+
+    try {
+      this._teardownSocket(st, 'FORCE_RESET_PAIRING');
+      const authDir = this._resolveAuthDir(sessionKey);
+      this._purgeAuthCredentials(authDir);
+      fs.mkdirSync(authDir, { recursive: true });
+      await this.connect(sessionKey);
+      return { ok: true, inProgress: false, sessionKey };
+    } catch (err) {
+      st.isPairingReset = false;
+      throw err;
+    }
+  }
+
+  /**
+   * Actively waits until `lastQrBase64` is ready, or status reaches `CONNECTED` / `STANDBY`,
+   * or `timeoutMs` elapses — without leaking timers.
+   * @param {string} sessionKey
+   * @param {{ timeoutMs?: number, pollMs?: number }} [options]
+   */
+  async waitForQr(sessionKey, options = {}) {
+    const timeoutMs = Number.isFinite(options.timeoutMs)
+      ? Math.max(0, Number(options.timeoutMs))
+      : 15000;
+    const pollMs = Number.isFinite(options.pollMs)
+      ? Math.max(10, Number(options.pollMs))
+      : 200;
+
+    const isDone = (st) =>
+      Boolean(st && (st.lastQrBase64 || st.status === 'CONNECTED' || st.status === 'STANDBY'));
+
+    let st = this._sessions.get(sessionKey);
+    if (isDone(st)) {
+      return {
+        sessionKey,
+        status: st.status,
+        qrBase64: st.lastQrBase64 || null,
+        rawText: st.lastRawQr || null,
+        timedOut: false,
+      };
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+      const stepMs = Math.min(pollMs, remaining);
+      let timer = null;
+      try {
+        await new Promise((resolve) => {
+          timer = setTimeout(resolve, stepMs);
+          if (typeof timer.unref === 'function') timer.unref();
+        });
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+      st = this._sessions.get(sessionKey);
+      if (isDone(st)) {
+        return {
+          sessionKey,
+          status: st.status,
+          qrBase64: st.lastQrBase64 || null,
+          rawText: st.lastRawQr || null,
+          timedOut: false,
+        };
+      }
+    }
+
+    st = this._sessions.get(sessionKey);
+    return {
+      sessionKey,
+      status: st ? st.status : 'DISCONNECTED',
+      qrBase64: st?.lastQrBase64 || null,
+      rawText: st?.lastRawQr || null,
+      timedOut: true,
+    };
+  }
+
+  /**
+   * Returns real-time watchdog diagnostics for `sessionKey`.
+   * @param {string} sessionKey
+   */
+  getSessionDiagnostics(sessionKey) {
+    const st = this._sessions.get(sessionKey);
+    if (!st) {
+      return {
+        sessionKey,
+        status: 'DISCONNECTED',
+        phoneNumber: null,
+        lastEventTime: null,
+        reconnectAttempts: 0,
+        retryCount: 0,
+        isInitializing: false,
+        isPairingReset: false,
+        hasQr: false,
+      };
+    }
+    const phoneNumber =
+      extractJidDigits(st.sock?.user?.id) || st.phoneNumber || null;
+    return {
+      sessionKey,
+      status: st.status,
+      phoneNumber,
+      lastEventTime: st.lastEventTime || null,
+      reconnectAttempts: st.reconnectAttempts,
+      retryCount: st.retryCount,
+      isInitializing: st.isInitializing,
+      isPairingReset: Boolean(st.isPairingReset),
+      hasQr: Boolean(st.lastQrBase64),
+    };
+  }
+
+  /**
    * Disconnects and cleans up listeners/timers for `sessionKey` (never wipes credentials).
    * @param {string} sessionKey
    */
@@ -499,8 +719,10 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
 
     st.status = 'DISCONNECTED';
     st.isInitializing = false;
+    st.isPairingReset = false;
     st.lastQrBase64 = null;
     st.lastRawQr = null;
+    st.lastEventTime = Date.now();
     this._teardownSocket(st, 'SESSION_DISCONNECTED');
     this.onConnectionChange?.({
       sessionKey,

@@ -11,6 +11,7 @@ const { PartnerRepository } = require('../core/storage/repositories/PartnerRepos
 const { CustomerRepository } = require('../core/storage/repositories/CustomerRepository');
 const { ConversationRepository } = require('../core/storage/repositories/ConversationRepository');
 const { AppointmentRepository } = require('../core/storage/repositories/AppointmentRepository');
+const { OrderRepository } = require('../core/storage/repositories/OrderRepository');
 const { CatalogService } = require('../core/domain/CatalogService');
 const { PromptPin } = require('../core/ai/PromptPin');
 const { InputGuard } = require('../core/ai/InputGuard');
@@ -75,6 +76,7 @@ function createAgentFixture(options = {}) {
   const agent = new AgentEngine({
     dbManager,
     llmRouter: options.llmRouter,
+    nowFn: options.nowFn,
     maxContextTokens: options.maxContextTokens || 4096,
     maxToolIterations: options.maxToolIterations || 3,
   });
@@ -313,6 +315,25 @@ describe('Layer 3 — Motor Agêntico, Trava Atômica (Elo 3) & VoiceAdapter', (
     assert.equal(calledUrls.length, 2);
     assert.equal(router.isProviderHealthy('groq'), false);
     assert.equal(router.isProviderHealthy('xai'), true);
+    assert.equal(router.models.groq, 'openai/gpt-oss-120b');
+
+    // Verify GROQ_MODEL env override is respected
+    const prevGroqModel = process.env.GROQ_MODEL;
+    try {
+      delete process.env.GROQ_MODEL;
+      const defaultRouter = new LlmRouter();
+      assert.equal(defaultRouter.models.groq, 'openai/gpt-oss-120b');
+
+      process.env.GROQ_MODEL = 'openai/gpt-oss-120b-custom';
+      const envRouter = new LlmRouter();
+      assert.equal(envRouter.models.groq, 'openai/gpt-oss-120b-custom');
+    } finally {
+      if (prevGroqModel === undefined) {
+        delete process.env.GROQ_MODEL;
+      } else {
+        process.env.GROQ_MODEL = prevGroqModel;
+      }
+    }
   });
 
   test('5. Persistência de Contexto no SQLite e respeito estrito ao teto máximo de tokens', async () => {
@@ -334,10 +355,10 @@ describe('Layer 3 — Motor Agêntico, Trava Atômica (Elo 3) & VoiceAdapter', (
       },
     };
 
-    // Tight maxContextTokens = 600 so basePrompt + catalog + facts fit, while older history turns are trimmed
+    // Tight maxContextTokens = 700 so basePrompt + 7-day calendar + catalog + facts fit, while older history turns are trimmed
     const fx = createAgentFixture({
       llmRouter: mockRouter,
-      maxContextTokens: 600,
+      maxContextTokens: 700,
     });
 
     try {
@@ -360,7 +381,7 @@ describe('Layer 3 — Motor Agêntico, Trava Atômica (Elo 3) & VoiceAdapter', (
       });
 
       assert.equal(turn.ok, true);
-      assert.ok(turn.tokensEstimated <= 600, `Expected <= 600 tokens, got ${turn.tokensEstimated}`);
+      assert.ok(turn.tokensEstimated <= 700, `Expected <= 700 tokens, got ${turn.tokensEstimated}`);
       assert.ok(capturedSystem.includes('[svc-corte-l3] Corte Masculino'));
       assert.ok(capturedSystem.includes('degradê'));
 
@@ -494,5 +515,620 @@ describe('Layer 3 — Motor Agêntico, Trava Atômica (Elo 3) & VoiceAdapter', (
     const localRes = await localVoice.transcribe(Buffer.from('fake-ogg'), 'audio/ogg');
     assert.equal(localRes.ok, false);
     assert.equal(localRes.fallbackMessage, VoiceAdapter.FALLBACK_STT_MESSAGE);
+  });
+
+  test('8. LlmRouter Onda 1: leitura dinâmica de GROQ_API_KEY, fallback intra-Groq em 400 tool_use_failed, getDiagnostics() e contexto PME completo', async () => {
+    const prevKey = process.env.GROQ_API_KEY;
+    const prevFallbacks = process.env.GROQ_FALLBACK_MODELS;
+    delete process.env.GROQ_API_KEY;
+    process.env.GROQ_FALLBACK_MODELS = 'llama-3.3-70b-versatile,openai/gpt-oss-20b';
+
+    const calls = [];
+    const silentLogger = { info() {}, warn() {}, error() {} };
+    const router = new LlmRouter({
+      logger: silentLogger,
+      fetchImpl: async (_url, init) => {
+        const body = JSON.parse(init.body);
+        calls.push({ model: body.model, hasTools: Array.isArray(body.tools) && body.tools.length > 0 });
+        if (body.tools && body.tools.length > 0) {
+          return {
+            ok: false,
+            status: 400,
+            async text() {
+              return JSON.stringify({
+                error: {
+                  message: 'Failed to call a function. Please adjust your prompt.',
+                  code: 'tool_use_failed',
+                },
+              });
+            },
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          async text() {
+            return JSON.stringify({
+              choices: [{ message: { content: 'Resposta limpa sem tools!' } }],
+            });
+          },
+        };
+      },
+    });
+
+    try {
+      // Dynamic key resolution after instantiation
+      assert.equal(router.getDiagnostics().configuredProviders.groq, false);
+      process.env.GROQ_API_KEY = '  "gsk_dynamic_test_key"  ';
+      assert.equal(router.getDiagnostics().configuredProviders.groq, true);
+
+      const res = await router.generate({
+        systemPrompt: 'Seja educado.',
+        userMessage: 'Qual o horário?',
+        tools: [{ name: 'get_item_spec', description: 'Spec', parameters: { type: 'object', properties: {} } }],
+      });
+
+      assert.equal(res.ok, true);
+      assert.equal(res.providerUsed, 'groq');
+      assert.equal(res.model, 'openai/gpt-oss-120b');
+      assert.equal(res.text, 'Resposta limpa sem tools!');
+      assert.deepEqual(
+        calls.map((c) => `${c.model}:${c.hasTools ? 'tools' : 'clean'}`),
+        [
+          'openai/gpt-oss-120b:tools',
+          'llama-3.3-70b-versatile:tools',
+          'openai/gpt-oss-20b:tools',
+          'openai/gpt-oss-120b:clean',
+        ]
+      );
+
+      const diag = router.getDiagnostics();
+      assert.equal(diag.lastErrors.length, 3);
+      assert.equal(diag.lastErrors[0].statusCode, 400);
+      assert.equal(JSON.stringify(diag).includes('gsk_dynamic_test_key'), false);
+    } finally {
+      if (prevKey === undefined) delete process.env.GROQ_API_KEY;
+      else process.env.GROQ_API_KEY = prevKey;
+      if (prevFallbacks === undefined) delete process.env.GROQ_FALLBACK_MODELS;
+      else process.env.GROQ_FALLBACK_MODELS = prevFallbacks;
+    }
+
+    // Verify AgentEngine.buildContext() includes working_hours, policies, pdf_files, image_files
+    const fx = createAgentFixture();
+    try {
+      fx.partnerRepo.update(fx.partner.id, {
+        personalityPrompt: 'Atenda com estilo barbearia clássica.',
+        workingHours: { days: ['Segunda', 'Terça'], startTime: '09:00', endTime: '19:00' },
+        policies: { cancellationHours: 2 },
+        pdfFiles: [{ name: 'tabela_vip.pdf', text: 'Plano mensal inclui 4 cortes.' }],
+        imageFiles: [{ name: 'fachada.png', description: 'Fachada da loja' }],
+        logoDataUrl: 'data:image/png;base64,AAA=',
+      });
+      const ctx = fx.agent.buildContext({
+        partnerId: fx.partner.id,
+        conversationId: fx.conversation.id,
+        currentUserMessage: 'Quais os planos?',
+      });
+      assert.ok(ctx.systemPrompt.includes('Atenda com estilo barbearia clássica.'));
+      assert.ok(ctx.systemPrompt.includes('[HORÁRIO DE FUNCIONAMENTO]'));
+      assert.ok(ctx.systemPrompt.includes('[POLÍTICAS]'));
+      assert.ok(ctx.systemPrompt.includes('tabela_vip.pdf'));
+      assert.ok(ctx.systemPrompt.includes('Plano mensal inclui 4 cortes.'));
+      assert.ok(ctx.systemPrompt.includes('fachada.png'));
+    } finally {
+      fx.dbManager.close();
+    }
+
+    // Intra-Gemini fallback on 503 high demand
+    const prevGemKey = process.env.GEMINI_API_KEY;
+    const prevGemFallbacks = process.env.GEMINI_FALLBACK_MODELS;
+    process.env.GEMINI_API_KEY = 'gem-test-fallback-key';
+    process.env.GEMINI_FALLBACK_MODELS = 'gemini-flash-lite-latest';
+    const gemCalls = [];
+    const gemRouter = new LlmRouter({
+      providerOrder: ['gemini'],
+      logger: { info() {}, warn() {}, error() {} },
+      fetchImpl: async (url) => {
+        gemCalls.push(url);
+        if (url.includes('gemini-3-flash-preview')) {
+          return {
+            ok: false,
+            status: 503,
+            async text() {
+              return JSON.stringify({ error: { message: 'This model is currently experiencing high demand.' } });
+            },
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          async text() {
+            return JSON.stringify({
+              candidates: [{ content: { parts: [{ text: 'Fallback Gemini OK!' }] } }],
+            });
+          },
+        };
+      },
+    });
+    try {
+      const gemRes = await gemRouter.generate({
+        systemPrompt: 'Seja educado.',
+        userMessage: 'Oi',
+      });
+      assert.equal(gemRes.ok, true);
+      assert.equal(gemRes.providerUsed, 'gemini');
+      assert.equal(gemRes.model, 'gemini-flash-lite-latest');
+      assert.equal(gemRes.text, 'Fallback Gemini OK!');
+      assert.equal(gemCalls.length, 2);
+
+      // Gemini 3.x thoughtSignature + rawParts round-trip across tool-calling turns
+      let capturedSecondPayload = null;
+      const sigRouter = new LlmRouter({
+        providerOrder: ['gemini'],
+        logger: { info() {}, warn() {}, error() {} },
+        fetchImpl: async (_url, init) => {
+          const parsed = JSON.parse(init.body);
+          if (parsed.contents.length === 1) {
+            return {
+              ok: true,
+              status: 200,
+              async text() {
+                return JSON.stringify({
+                  candidates: [
+                    {
+                      content: {
+                        parts: [
+                          {
+                            functionCall: {
+                              name: 'get_item_spec',
+                              args: { item_id: 'prd-1' },
+                            },
+                            thoughtSignature: 'sig_abc_123',
+                          },
+                        ],
+                      },
+                    },
+                  ],
+                });
+              },
+            };
+          }
+          capturedSecondPayload = parsed;
+          return {
+            ok: true,
+            status: 200,
+            async text() {
+              return JSON.stringify({
+                candidates: [{ content: { parts: [{ text: 'Confirmado!' }] } }],
+              });
+            },
+          };
+        },
+      });
+      const step1 = await sigRouter.generate({
+        systemPrompt: 'Max',
+        userMessage: 'Quero o produto',
+        tools: [{ name: 'get_item_spec', description: 'Spec', parameters: { type: 'object', properties: {} } }],
+      });
+      assert.equal(step1.toolCalls[0].thoughtSignature, 'sig_abc_123');
+      const step2 = await sigRouter.generate({
+        systemPrompt: 'Max',
+        messages: [
+          { role: 'user', content: 'Quero o produto' },
+          { role: 'assistant', content: '', toolCalls: step1.toolCalls, rawParts: step1.rawParts },
+          { role: 'tool', name: 'get_item_spec', content: '{"ok":true}' },
+        ],
+      });
+      assert.equal(step2.ok, true);
+      assert.equal(capturedSecondPayload.contents[1].parts[0].thoughtSignature, 'sig_abc_123');
+    } finally {
+      if (prevGemKey === undefined) delete process.env.GEMINI_API_KEY;
+      else process.env.GEMINI_API_KEY = prevGemKey;
+      if (prevGemFallbacks === undefined) delete process.env.GEMINI_FALLBACK_MODELS;
+      else process.env.GEMINI_FALLBACK_MODELS = prevGemFallbacks;
+    }
+  });
+
+  test('9. Detecção Determinística Híbrida (Serviços + Produtos), Aviso na 2ª Mensagem & Bloqueio Anti-Fluxo Cruzado', async () => {
+    // 9a. Catálogo Híbrido: Turn 1 (sem aviso) -> Turn 2 (aviso no final) -> Turn 3 (não repete)
+    const capturedSystems = [];
+    const hybridRouter = {
+      async generate({ systemPrompt }) {
+        capturedSystems.push(systemPrompt);
+        return {
+          ok: true,
+          status: 'SUCCESS',
+          providerUsed: 'mock',
+          model: 'mock-1',
+          text: 'Olá! Como posso ajudar hoje?',
+          toolCalls: [],
+        };
+      },
+    };
+
+    const fx = createAgentFixture({ llmRouter: hybridRouter });
+    try {
+      const t1 = await fx.agent.processTurn({
+        partnerId: fx.partner.id,
+        conversationId: fx.conversation.id,
+        customerId: fx.customer.id,
+        message: 'Oi',
+      });
+      assert.equal(t1.ok, true);
+      assert.equal(t1.offeringSummary.mode, 'HYBRID');
+      assert.ok(capturedSystems[0].includes('[OFERTA: HÍBRIDO (1 serviço(s), 1 produto(s))]'));
+      assert.equal(t1.text.includes('Oferecemos produtos e serviços'), false);
+
+      const t2 = await fx.agent.processTurn({
+        partnerId: fx.partner.id,
+        conversationId: fx.conversation.id,
+        customerId: fx.customer.id,
+        message: 'Quero saber mais',
+      });
+      assert.equal(t2.ok, true);
+      assert.ok(
+        t2.text.endsWith(AgentEngine.HYBRID_OFFERING_NOTICE),
+        `Expected 2nd message to end with hybrid notice, got: ${t2.text}`
+      );
+
+      const t3 = await fx.agent.processTurn({
+        partnerId: fx.partner.id,
+        conversationId: fx.conversation.id,
+        customerId: fx.customer.id,
+        message: 'Obrigado',
+      });
+      assert.equal(t3.ok, true);
+      assert.equal(t3.text.includes('Oferecemos produtos e serviços'), false);
+    } finally {
+      fx.dbManager.close();
+    }
+
+    // 9b. Harness bloqueia book_service em PRODUCT e create_order em SERVICE + AtomicOutputGuard bloqueia saída errada
+    let wrongStep = 0;
+    const wrongFlowRouter = {
+      async generate() {
+        wrongStep += 1;
+        if (wrongStep === 1) {
+          return {
+            ok: true,
+            status: 'SUCCESS',
+            providerUsed: 'mock',
+            model: 'mock-1',
+            text: '',
+            toolCalls: [
+              {
+                id: 'tc_wrong_book',
+                name: 'book_service',
+                arguments: {
+                  item_id: 'prd-pomada-l3',
+                  date_str: '2026-12-20',
+                  time_slot: '10:00',
+                  client_name: 'Carlos',
+                  confirmed: true,
+                },
+              },
+            ],
+          };
+        }
+        return {
+          ok: true,
+          status: 'SUCCESS',
+          providerUsed: 'mock',
+          model: 'mock-1',
+          text: 'Seu agendamento da Pomada foi confirmado!',
+          toolCalls: [],
+        };
+      },
+    };
+
+    const fxWrong1 = createAgentFixture({ llmRouter: wrongFlowRouter });
+    try {
+      const resWrong1 = await fxWrong1.agent.processTurn({
+        partnerId: fxWrong1.partner.id,
+        conversationId: fxWrong1.conversation.id,
+        customerId: fxWrong1.customer.id,
+        message: 'Quero a pomada para amanhã às 10h',
+      });
+      assert.equal(resWrong1.blocked, true);
+      assert.equal(resWrong1.reason, 'WRONG_FLOW_BLOCKED');
+      assert.equal(resWrong1.toolResults[0].result.code, 'WRONG_FLOW_USE_CREATE_ORDER');
+      assert.equal(resWrong1.committedTransactions.length, 0);
+      assert.equal(
+        fxWrong1.appointmentRepo.listByPartnerAndDate(fxWrong1.partner.id, '2026-12-20').length,
+        0
+      );
+      const audits = fxWrong1.partnerRepo.listAuditLogs(fxWrong1.partner.id);
+      assert.ok(audits.some((a) => a.event_type === 'WRONG_FLOW_INTERCEPTED'));
+    } finally {
+      fxWrong1.dbManager.close();
+    }
+
+    // 9c. Harness bloqueia create_order em SERVICE e permite autocorreção na iteração seguinte
+    let orderWrongStep = 0;
+    const autoCorrectRouter = {
+      async generate() {
+        orderWrongStep += 1;
+        if (orderWrongStep === 1) {
+          return {
+            ok: true,
+            status: 'SUCCESS',
+            providerUsed: 'mock',
+            model: 'mock-1',
+            text: '',
+            toolCalls: [
+              {
+                id: 'tc_wrong_order',
+                name: 'create_order',
+                arguments: {
+                  items: [{ item_id: 'svc-corte-l3', qty: 1 }],
+                  client_name: 'Carlos',
+                  confirmed: true,
+                },
+              },
+            ],
+          };
+        }
+        if (orderWrongStep === 2) {
+          return {
+            ok: true,
+            status: 'SUCCESS',
+            providerUsed: 'mock',
+            model: 'mock-1',
+            text: '',
+            toolCalls: [
+              {
+                id: 'tc_fixed_book',
+                name: 'book_service',
+                arguments: {
+                  item_id: 'svc-corte-l3',
+                  date_str: '2026-12-21',
+                  time_slot: '15:00',
+                  client_name: 'Carlos',
+                  confirmed: true,
+                },
+              },
+            ],
+          };
+        }
+        return {
+          ok: true,
+          status: 'SUCCESS',
+          providerUsed: 'mock',
+          model: 'mock-1',
+          text: 'Corte Masculino agendado para 21/12/2026 às 15:00!',
+          toolCalls: [],
+        };
+      },
+    };
+
+    const fxWrong2 = createAgentFixture({ llmRouter: autoCorrectRouter });
+    try {
+      const resFixed = await fxWrong2.agent.processTurn({
+        partnerId: fxWrong2.partner.id,
+        conversationId: fxWrong2.conversation.id,
+        customerId: fxWrong2.customer.id,
+        message: 'Quero Corte Masculino dia 21/12/2026 às 15:00',
+      });
+      assert.equal(resFixed.ok, true);
+      assert.equal(resFixed.toolResults[0].result.code, 'WRONG_FLOW_USE_BOOK_SERVICE');
+      assert.equal(resFixed.committedTransactions.length, 1);
+      assert.equal(resFixed.committedTransactions[0].type, 'appointment');
+      assert.equal(
+        fxWrong2.appointmentRepo.listByPartnerAndDate(fxWrong2.partner.id, '2026-12-21').length,
+        1
+      );
+    } finally {
+      fxWrong2.dbManager.close();
+    }
+
+    // 9d. Catálogo somente de produtos: detecta PRODUCTS_ONLY e NÃO envia aviso híbrido na 2ª mensagem
+    const prodOnlyRouter = {
+      async generate() {
+        return {
+          ok: true,
+          status: 'SUCCESS',
+          providerUsed: 'mock',
+          model: 'mock-1',
+          text: 'Temos a Pomada Efeito Seco disponível!',
+          toolCalls: [],
+        };
+      },
+    };
+    const fxProdOnly = createAgentFixture({ llmRouter: prodOnlyRouter });
+    try {
+      fxProdOnly.catalogService.softDeleteItem(fxProdOnly.partner.id, 'svc-corte-l3');
+      const p1 = await fxProdOnly.agent.processTurn({
+        partnerId: fxProdOnly.partner.id,
+        conversationId: fxProdOnly.conversation.id,
+        customerId: fxProdOnly.customer.id,
+        message: 'Oi',
+      });
+      assert.equal(p1.offeringSummary.mode, 'PRODUCTS_ONLY');
+      const p2 = await fxProdOnly.agent.processTurn({
+        partnerId: fxProdOnly.partner.id,
+        conversationId: fxProdOnly.conversation.id,
+        customerId: fxProdOnly.customer.id,
+        message: 'O que vocês vendem?',
+      });
+      assert.equal(p2.text.includes('Oferecemos produtos e serviços'), false);
+    } finally {
+      fxProdOnly.dbManager.close();
+    }
+  });
+
+  test('10. Trava Um-Por-Vez (MIXED_COMMIT_BLOCKED): impede confirmar serviço e produto no mesmo turno', async () => {
+    let step = 0;
+    const mixedBatchRouter = {
+      async generate() {
+        step += 1;
+        if (step === 1) {
+          return {
+            ok: true,
+            status: 'SUCCESS',
+            providerUsed: 'mock',
+            model: 'mock-1',
+            text: '',
+            toolCalls: [
+              {
+                id: 'tc_mix_book',
+                name: 'book_service',
+                arguments: {
+                  item_id: 'svc-corte-l3',
+                  date_str: '2026-12-22',
+                  time_slot: '10:00',
+                  client_name: 'Carlos',
+                  confirmed: true,
+                },
+              },
+              {
+                id: 'tc_mix_order',
+                name: 'create_order',
+                arguments: {
+                  items: [{ item_id: 'prd-pomada-l3', qty: 1 }],
+                  client_name: 'Carlos',
+                  confirmed: true,
+                },
+              },
+            ],
+          };
+        }
+        return {
+          ok: true,
+          status: 'SUCCESS',
+          providerUsed: 'mock',
+          model: 'mock-1',
+          text: 'Para evitar erros, prefere confirmar primeiro o Corte Masculino ou a Pomada Efeito Seco?',
+          toolCalls: [],
+        };
+      },
+    };
+
+    const fx = createAgentFixture({ llmRouter: mixedBatchRouter });
+    try {
+      const res = await fx.agent.processTurn({
+        partnerId: fx.partner.id,
+        conversationId: fx.conversation.id,
+        customerId: fx.customer.id,
+        message: 'Quero agendar corte dia 22/12 às 10h e também pedir 1 pomada, confirma os dois!',
+      });
+      assert.equal(res.ok, true);
+      assert.equal(res.committedTransactions.length, 0);
+      assert.equal(res.toolResults[0].result.code, 'MIXED_COMMIT_BLOCKED');
+      assert.equal(res.toolResults[1].result.code, 'MIXED_COMMIT_BLOCKED');
+      assert.equal(
+        fx.appointmentRepo.listByPartnerAndDate(fx.partner.id, '2026-12-22').length,
+        0
+      );
+      const audits = fx.partnerRepo.listAuditLogs(fx.partner.id);
+      assert.ok(audits.some((a) => a.event_type === 'MIXED_FLOW_INTERCEPTED'));
+    } finally {
+      fx.dbManager.close();
+    }
+  });
+
+  test('11. Calendário Rolante 7 Dias no buildContext() & Proteção Pós-Commit contra LOCAL_FALLBACK', async () => {
+    const fixedNow = () => new Date('2026-11-24T14:00:00-03:00');
+    let stepOrder = 0;
+    const orderFallbackRouter = {
+      async generate() {
+        stepOrder += 1;
+        if (stepOrder === 1) {
+          return {
+            ok: true,
+            status: 'SUCCESS',
+            providerUsed: 'gemini',
+            model: 'gemini-3-flash-preview',
+            text: '',
+            toolCalls: [
+              {
+                id: 'tc_ord_fb',
+                name: 'create_order',
+                arguments: {
+                  items: [{ item_id: 'prd-pomada-l3', qty: 1 }],
+                  client_name: 'Maria',
+                  confirmed: true,
+                },
+              },
+            ],
+          };
+        }
+        return {
+          ok: false,
+          status: 'LOCAL_FALLBACK',
+          providerUsed: 'local_fallback',
+          model: 'none',
+          text: 'No momento estamos passando por uma rápida instabilidade na nossa inteligência. Pode repetir sua solicitação em instantes, por favor?',
+          toolCalls: [],
+        };
+      },
+    };
+
+    const fx = createAgentFixture({
+      llmRouter: orderFallbackRouter,
+      nowFn: fixedNow,
+    });
+    const promptPin = new PromptPin();
+
+    try {
+      // 1. PromptPin permanece intacto e buildContext injeta janela rolante de 7 dias
+      const pin = promptPin.verifyAtBoot({ strict: true });
+      assert.equal(pin.ok, true);
+
+      const ctx = fx.agent.buildContext({
+        partnerId: fx.partner.id,
+        customerId: fx.customer.id,
+        conversationId: fx.conversation.id,
+        currentUserMessage: 'Quero agendar',
+      });
+      assert.match(ctx.systemPrompt, /\[CALENDÁRIO OFICIAL EM TEMPO REAL — America\/Sao_Paulo\]/);
+      assert.match(ctx.systemPrompt, /Hoje: terça-feira, 2026-11-24/);
+      assert.match(ctx.systemPrompt, /Amanhã: quarta-feira, 2026-11-25/);
+      assert.match(ctx.systemPrompt, /\+6d: segunda-feira, 2026-11-30/);
+
+      // 2. Definições de tools reforçam confirmação explícita prévia
+      const tools = fx.agent.getToolDefinitions();
+      const bookDef = tools.find((t) => t.name === 'book_service');
+      const orderDef = tools.find((t) => t.name === 'create_order');
+      assert.match(bookDef.description, /SOMENTE após o cliente confirmar explicitamente/i);
+      assert.match(orderDef.description, /SOMENTE após o cliente confirmar explicitamente/i);
+
+      // 3. Pós-commit de pedido + LOCAL_FALLBACK na redação nunca envia texto de instabilidade
+      const resOrder = await fx.agent.processTurn({
+        partnerId: fx.partner.id,
+        conversationId: fx.conversation.id,
+        customerId: fx.customer.id,
+        message: 'Pode fechar o pedido da pomada!',
+      });
+      assert.equal(resOrder.ok, true);
+      assert.equal(resOrder.committedTransactions.length, 1);
+      assert.equal(/instabilidade/i.test(resOrder.text), false);
+      assert.match(resOrder.text, /Perfeito! Seu pedido foi confirmado com sucesso\./);
+      assert.match(resOrder.text, /\[COMPROVANTE OFICIAL DE PEDIDO\]/);
+
+      // 4. Defesa dupla direta no AtomicOutputGuard e recusa de data passada via book_service
+      const directGuard = new AtomicOutputGuard().validate({
+        text: 'No momento estamos passando por uma rápida instabilidade na nossa inteligência.',
+        committedTransactions: [
+          {
+            type: 'appointment',
+            toolName: 'book_service',
+            record: {
+              id: 'ap-fb-1',
+              date_str: '2026-11-25',
+              time_slot: '10:00',
+              item_name_snapshot: 'Corte Masculino',
+              price_cents_snapshot: 5000,
+              status: 'CONFIRMED',
+            },
+          },
+        ],
+      });
+      assert.equal(directGuard.ok, true);
+      assert.equal(/instabilidade/i.test(directGuard.text), false);
+      assert.match(directGuard.text, /Perfeito! Seu agendamento foi confirmado com sucesso\./);
+      assert.match(directGuard.text, /\[COMPROVANTE OFICIAL DE AGENDAMENTO\]/);
+    } finally {
+      fx.dbManager.close();
+    }
   });
 });

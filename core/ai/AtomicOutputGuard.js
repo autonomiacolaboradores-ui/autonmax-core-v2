@@ -206,6 +206,12 @@ class AtomicOutputGuard {
     this.priceFallbackText =
       options.priceFallbackText ||
       'Não consegui validar o valor exato informado. Por favor, consulte novamente os valores oficiais do nosso catálogo.';
+    this.wrongFlowFallbackText =
+      options.wrongFlowFallbackText ||
+      'Ops! Produtos seguem pelo fluxo de pedidos e serviços seguem pelo fluxo de agendamentos. Pode me confirmar qual item você deseja para eu seguir pelo caminho correto?';
+    this.mixedFlowFallbackText =
+      options.mixedFlowFallbackText ||
+      'Para evitar qualquer erro, precisamos confirmar um por vez! Você prefere confirmar primeiro o agendamento do serviço ou o pedido do produto?';
   }
 
   /**
@@ -224,13 +230,92 @@ class AtomicOutputGuard {
     committedTransactions = [],
   }) {
     const startNs = process.hrtime.bigint();
-    const rawText = String(text || '').trim();
+    let rawText = String(text || '').trim();
+    if (
+      committedTransactions.length > 0 &&
+      /(passando por uma r[aá]pida instabilidade|instabilidade na nossa intelig[eê]ncia)/i.test(
+        rawText
+      )
+    ) {
+      const hasOrder = committedTransactions.some((c) => c.type === 'order');
+      const hasAppt = committedTransactions.some((c) => c.type === 'appointment');
+      rawText =
+        hasOrder && hasAppt
+          ? 'Perfeito! Sua solicitação foi confirmada com sucesso.'
+          : hasOrder
+            ? 'Perfeito! Seu pedido foi confirmado com sucesso.'
+            : 'Perfeito! Seu agendamento foi confirmado com sucesso.';
+    }
     const receipts = committedTransactions
       .map((c) => formatDeterministicReceipt(c))
       .filter(Boolean);
 
-    // 1. Confirmation Lock (End of Phantom Confirmation Bug)
+    // 1. Cross-Flow & Mixed-Flow Lock (never book a PRODUCT, order a SERVICE, or mix both in 1 turn)
+    const hasMixedFlowBlock = toolResults.some(
+      (tr) => tr?.result?.code === 'MIXED_COMMIT_BLOCKED'
+    );
+    const hasBothCommitTypes =
+      committedTransactions.some((c) => c.type === 'appointment') &&
+      committedTransactions.some((c) => c.type === 'order');
     const claim = detectConfirmationClaim(rawText);
+
+    if (
+      hasBothCommitTypes ||
+      (hasMixedFlowBlock && committedTransactions.length === 0 && claim.claimed)
+    ) {
+      const latencyMs = Number(process.hrtime.bigint() - startNs) / 1e6;
+      return {
+        ok: false,
+        blocked: true,
+        reason: 'MIXED_FLOW_BLOCKED',
+        claimKind: claim.kind,
+        text: this.mixedFlowFallbackText,
+        originalText: rawText,
+        receipts: [],
+        mismatches: [],
+        allowedCents: [],
+        latencyMs,
+      };
+    }
+
+    const unresolvedWrongFlow = toolResults.find(
+      (tr) =>
+        (tr?.result?.code === 'WRONG_FLOW_USE_CREATE_ORDER' ||
+          tr?.result?.code === 'WRONG_FLOW_USE_BOOK_SERVICE') &&
+        committedTransactions.length === 0
+    );
+    const hasServices = catalogItems.some(
+      (it) => String(it?.item_type || it?.type || '').toUpperCase() === 'SERVICE'
+    );
+    const hasProducts = catalogItems.some(
+      (it) => String(it?.item_type || it?.type || '').toUpperCase() === 'PRODUCT'
+    );
+
+    if (
+      (unresolvedWrongFlow && claim.claimed) ||
+      (unresolvedWrongFlow?.result?.code === 'WRONG_FLOW_USE_CREATE_ORDER' &&
+        /\b(agendad[oa]|hor[aá]rio\s+marcad[oa]|agenda\s+confirmada)\b/i.test(rawText)) ||
+      (unresolvedWrongFlow?.result?.code === 'WRONG_FLOW_USE_BOOK_SERVICE' &&
+        /\b(pedido\s+anotad[oa]|pedido\s+confirmad[oa]|compra\s+confirmada)\b/i.test(rawText)) ||
+      (!hasServices && hasProducts && claim.claimed && claim.kind === 'booking') ||
+      (hasServices && !hasProducts && claim.claimed && claim.kind === 'order')
+    ) {
+      const latencyMs = Number(process.hrtime.bigint() - startNs) / 1e6;
+      return {
+        ok: false,
+        blocked: true,
+        reason: 'WRONG_FLOW_BLOCKED',
+        claimKind: claim.kind,
+        text: this.wrongFlowFallbackText,
+        originalText: rawText,
+        receipts: [],
+        mismatches: [],
+        allowedCents: [],
+        latencyMs,
+      };
+    }
+
+    // 2. Confirmation Lock (End of Phantom Confirmation Bug)
     if (claim.claimed) {
       const hasMatchingCommit =
         claim.kind === 'booking'

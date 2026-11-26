@@ -15,10 +15,12 @@ const { QueueRepository } = require('../core/storage/repositories/QueueRepositor
 const { ChannelAdapter } = require('../core/messaging/ChannelAdapter');
 const { WhatsAppBaileysAdapter } = require('../core/messaging/adapters/WhatsAppBaileysAdapter');
 const { SessionManager } = require('../core/messaging/SessionManager');
+const { SessionWatchdog } = require('../core/messaging/SessionWatchdog');
 const { MessageDebouncer } = require('../core/messaging/MessageDebouncer');
 const { OutboundQueueWorker } = require('../core/messaging/OutboundQueueWorker');
 const { PauseController } = require('../core/messaging/PauseController');
 const { VoiceAdapter } = require('../core/ai/voice/VoiceAdapter');
+const { LifecycleManager } = require('../core/lifecycle/LifecycleManager');
 
 class MockChannelAdapter extends ChannelAdapter {
   constructor() {
@@ -833,6 +835,105 @@ describe('Layer 4 — Mensageria Resiliente, Debouncer & Fila Anti-Ban', () => {
       assert.match(lastAgentInput, /remarcar para terça/);
       assert.match(lastAgentInput, /Tem horário às 15h/);
     } finally {
+      await fx.cleanup();
+    }
+  });
+
+  test('10. Auto-Reconexão no Boot (restorePersistedSessions): valida creds.json, ignora corrompido e restaura parceiro em Soft-Pause Global', async () => {
+    const fx = createMessagingFixture();
+
+    try {
+      // Cria segundo parceiro com Soft-Pause Global ativo (is_active = 0)
+      const pausedPartner = fx.partnerRepo.create({
+        id: 'usr_paused',
+        email: 'paused@autonmax.dev',
+        displayName: 'Loja Pausada',
+        isActive: false,
+      });
+
+      // 1. Sessão válida do parceiro em Soft-Pause Global -> deve restaurar socket
+      const pausedPaths = fx.sessionManager.resolveSessionPaths(`pme:${pausedPartner.id}`);
+      fs.mkdirSync(pausedPaths.authDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(pausedPaths.authDir, 'creds.json'),
+        JSON.stringify({ me: { id: '5511999990001:1@s.whatsapp.net' } })
+      );
+
+      // 2. Sessão com creds.json corrompido/vazio -> deve ser ignorada
+      const brokenPaths = fx.sessionManager.resolveSessionPaths(`pme:${fx.partner.id}:line_broken`);
+      fs.mkdirSync(brokenPaths.authDir, { recursive: true });
+      fs.writeFileSync(path.join(brokenPaths.authDir, 'creds.json'), '{}');
+
+      // 3. Sessão válida com múltiplas linhas (inferida sem session.json) -> deve restaurar
+      const line2Paths = fx.sessionManager.resolveSessionPaths(`pme:${fx.partner.id}:line_2`);
+      fs.mkdirSync(line2Paths.authDir, { recursive: true });
+      fs.writeFileSync(
+        path.join(line2Paths.authDir, 'creds.json'),
+        JSON.stringify({ noiseKey: { private: 'abc', public: 'def' } })
+      );
+
+      const restored = await fx.sessionManager.restorePersistedSessions();
+      assert.equal(restored.includes(`pme:${pausedPartner.id}`), true);
+      assert.equal(restored.includes(`pme:${fx.partner.id}:line_2`), true);
+      assert.equal(restored.includes(`pme:${fx.partner.id}:line_broken`), false);
+      assert.equal(await fx.adapter.getStatus(`pme:${pausedPartner.id}`), 'CONNECTED');
+      assert.equal(await fx.adapter.getStatus(`pme:${fx.partner.id}:line_2`), 'CONNECTED');
+    } finally {
+      await fx.cleanup();
+    }
+  });
+
+  test('11. SessionWatchdog executa soft-reconnect sem apagar creds.json, respeita STANDBY/backoff e para limpo via LifecycleManager', async () => {
+    const reconnectCalls = [];
+    class WatchdogAdapter extends MockChannelAdapter {
+      async forceReconnect(sessionKey) {
+        reconnectCalls.push(sessionKey);
+        this.statuses.set(sessionKey, 'CONNECTED');
+      }
+    }
+
+    const adapter = new WatchdogAdapter();
+    const fx = createMessagingFixture({ channelAdapter: adapter });
+    const lifecycle = new LifecycleManager({ drainTimeoutMs: 1000 });
+
+    try {
+      const entry = await fx.sessionManager.connectSession(fx.partner.id, 'default');
+      const credsPath = path.join(entry.authDir, 'creds.json');
+      fs.writeFileSync(credsPath, JSON.stringify({ me: { id: '5511888887777:1@s.whatsapp.net' } }));
+
+      const watchdog = new SessionWatchdog({
+        sessionManager: fx.sessionManager,
+        intervalMs: 60_000,
+        baseBackoffMs: 500,
+        enabled: true,
+      });
+      lifecycle.register('session-watchdog', () => watchdog.stop());
+
+      // Sessão em STANDBY não deve disparar reconnect
+      adapter.statuses.set(entry.sessionKey, 'STANDBY');
+      const standbyTick = await watchdog.tick();
+      assert.equal(standbyTick.actions.length, 0);
+      assert.equal(reconnectCalls.length, 0);
+
+      // Sessão caiu para DISCONNECTED com creds.json válido -> soft reconnect sem wipe
+      adapter.statuses.set(entry.sessionKey, 'DISCONNECTED');
+      const recoverTick = await watchdog.tick();
+      assert.equal(recoverTick.actions.length, 1);
+      assert.equal(recoverTick.actions[0].action, 'soft_reconnect');
+      assert.equal(reconnectCalls.length, 1);
+      assert.equal(await adapter.getStatus(entry.sessionKey), 'CONNECTED');
+      assert.equal(fs.existsSync(credsPath), true);
+
+      // Start + shutdown limpo via LifecycleManager
+      const startRes = watchdog.start();
+      assert.equal(startRes.started, true);
+      assert.equal(watchdog.getStatus().running, true);
+
+      const shutdownRes = await lifecycle.shutdown('test-watchdog');
+      assert.equal(shutdownRes.ok, true);
+      assert.equal(watchdog.getStatus().running, false);
+    } finally {
+      await lifecycle.shutdown('finally');
       await fx.cleanup();
     }
   });

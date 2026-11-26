@@ -185,6 +185,23 @@ class DatabaseManager {
   }
 
   /**
+   * Executes a safe WAL checkpoint for file-backed databases.
+   * @param {'PASSIVE' | 'FULL' | 'RESTART' | 'TRUNCATE'} [mode='PASSIVE']
+   * @returns {boolean}
+   */
+  checkpoint(mode = 'PASSIVE') {
+    if (!this.db || this.dbPath === ':memory:' || String(this.dbPath).startsWith('file:')) {
+      return false;
+    }
+    const allowed = new Set(['PASSIVE', 'FULL', 'RESTART', 'TRUNCATE']);
+    const normalized = allowed.has(String(mode).toUpperCase())
+      ? String(mode).toUpperCase()
+      : 'PASSIVE';
+    this.db.exec(`PRAGMA wal_checkpoint(${normalized});`);
+    return true;
+  }
+
+  /**
    * Executes WAL checkpoint (TRUNCATE) and closes the database connection cleanly.
    * Safe to call multiple times.
    */

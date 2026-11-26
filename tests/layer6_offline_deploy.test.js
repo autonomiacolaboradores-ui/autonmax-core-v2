@@ -712,4 +712,70 @@ describe('Layer 6 — Interface Híbrida Offline-First (SPA/PWA + Capacitor) & D
       dbManager.close();
     }
   });
+
+  test('12. EnvironmentPorts.secureAuth persiste JWT em localStorage na Web (migrando sessionStorage) e mantém isolamento no modo nativo', async () => {
+    const prevLocal = globalThis.localStorage;
+    const prevSession = globalThis.sessionStorage;
+    const prevCap = globalThis.Capacitor;
+
+    const makeWebStore = () => {
+      const m = new Map();
+      return {
+        getItem: (k) => (m.has(k) ? m.get(k) : null),
+        setItem: (k, v) => m.set(k, String(v)),
+        removeItem: (k) => m.delete(k),
+      };
+    };
+
+    try {
+      const localMock = makeWebStore();
+      const sessionMock = makeWebStore();
+      globalThis.localStorage = localMock;
+      globalThis.sessionStorage = sessionMock;
+      delete globalThis.Capacitor;
+
+      // 1. Web: setToken grava em localStorage (sobrevive ao fechar aba)
+      const webPorts = createEnvironmentPorts({ isNativePlatform: false });
+      await webPorts.secureAuth.setToken('jwt-web-persistent-30d');
+      assert.equal(localMock.getItem('autonmax_jwt'), 'jwt-web-persistent-30d');
+      assert.equal(await webPorts.secureAuth.getToken(), 'jwt-web-persistent-30d');
+
+      // 2. Migração transparente de sessionStorage legado -> localStorage
+      localMock.removeItem('autonmax_jwt');
+      sessionMock.setItem('autonmax_jwt', 'jwt-migrated-from-session');
+      assert.equal(await webPorts.secureAuth.getToken(), 'jwt-migrated-from-session');
+      assert.equal(localMock.getItem('autonmax_jwt'), 'jwt-migrated-from-session');
+
+      // 3. clearToken limpa ambos
+      await webPorts.secureAuth.clearToken();
+      assert.equal(localMock.getItem('autonmax_jwt'), null);
+      assert.equal(sessionMock.getItem('autonmax_jwt'), null);
+
+      // 4. Modo nativo (Capacitor): NUNCA grava em localStorage; usa SecureStoragePlugin
+      const nativeVault = new Map();
+      globalThis.Capacitor = {
+        isNativePlatform: () => true,
+        Plugins: {
+          SecureStoragePlugin: {
+            async set({ key, value }) { nativeVault.set(key, value); },
+            async get({ key }) { return { value: nativeVault.get(key) || null }; },
+            async remove({ key }) { nativeVault.delete(key); },
+          },
+        },
+      };
+      const nativePorts = createEnvironmentPorts({ isNativePlatform: true });
+      await nativePorts.secureAuth.setToken('jwt-android-keystore');
+      assert.equal(localMock.getItem('autonmax_jwt'), null);
+      assert.equal(await nativePorts.secureAuth.getToken(), 'jwt-android-keystore');
+      await nativePorts.secureAuth.clearToken();
+      assert.equal(await nativePorts.secureAuth.getToken(), null);
+    } finally {
+      if (prevLocal === undefined) delete globalThis.localStorage;
+      else globalThis.localStorage = prevLocal;
+      if (prevSession === undefined) delete globalThis.sessionStorage;
+      else globalThis.sessionStorage = prevSession;
+      if (prevCap === undefined) delete globalThis.Capacitor;
+      else globalThis.Capacitor = prevCap;
+    }
+  });
 });

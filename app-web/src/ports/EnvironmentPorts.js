@@ -63,6 +63,32 @@ function createEnvironmentPorts(overrides = {}) {
   };
 
   let memToken = null;
+  const readWebStorage = (storageObj) => {
+    try {
+      return storageObj ? storageObj.getItem('autonmax_jwt') : null;
+    } catch {
+      return null;
+    }
+  };
+  const writeWebStorage = (storageObj, val) => {
+    try {
+      if (storageObj) {
+        storageObj.setItem('autonmax_jwt', val);
+        return true;
+      }
+    } catch {
+      return false;
+    }
+    return false;
+  };
+  const removeWebStorage = (storageObj) => {
+    try {
+      if (storageObj) storageObj.removeItem('autonmax_jwt');
+    } catch {
+      // Ignore storage quota/security errors.
+    }
+  };
+
   const secureAuth = overrides.secureAuth || {
     async getToken() {
       if (isNative && globalThis.Capacitor?.Plugins?.SecureStoragePlugin) {
@@ -75,24 +101,46 @@ function createEnvironmentPorts(overrides = {}) {
           return null;
         }
       }
-      if (typeof globalThis.sessionStorage !== 'undefined') {
-        return globalThis.sessionStorage.getItem('autonmax_jwt');
+      // On Web/PWA (non-native), persist across tab/browser restarts via localStorage
+      // (with migration fallback from legacy sessionStorage).
+      if (!isNative && typeof globalThis.localStorage !== 'undefined') {
+        const persisted = readWebStorage(globalThis.localStorage);
+        if (persisted) return persisted;
+        const fromSession =
+          typeof globalThis.sessionStorage !== 'undefined'
+            ? readWebStorage(globalThis.sessionStorage)
+            : null;
+        if (fromSession) {
+          writeWebStorage(globalThis.localStorage, fromSession);
+          return fromSession;
+        }
+      }
+      if (!isNative && typeof globalThis.sessionStorage !== 'undefined') {
+        return readWebStorage(globalThis.sessionStorage);
       }
       return memToken;
     },
     async setToken(token) {
+      const value = String(token);
       if (isNative && globalThis.Capacitor?.Plugins?.SecureStoragePlugin) {
         await globalThis.Capacitor.Plugins.SecureStoragePlugin.set({
           key: 'autonmax_jwt',
-          value: String(token),
+          value,
         });
         return;
       }
-      if (typeof globalThis.sessionStorage !== 'undefined') {
-        globalThis.sessionStorage.setItem('autonmax_jwt', String(token));
-        return;
+      if (!isNative && typeof globalThis.localStorage !== 'undefined') {
+        if (writeWebStorage(globalThis.localStorage, value)) {
+          if (typeof globalThis.sessionStorage !== 'undefined') {
+            removeWebStorage(globalThis.sessionStorage);
+          }
+          return;
+        }
       }
-      memToken = String(token);
+      if (!isNative && typeof globalThis.sessionStorage !== 'undefined') {
+        if (writeWebStorage(globalThis.sessionStorage, value)) return;
+      }
+      memToken = value;
     },
     async clearToken() {
       if (isNative && globalThis.Capacitor?.Plugins?.SecureStoragePlugin) {
@@ -101,9 +149,11 @@ function createEnvironmentPorts(overrides = {}) {
         });
         return;
       }
-      if (typeof globalThis.sessionStorage !== 'undefined') {
-        globalThis.sessionStorage.removeItem('autonmax_jwt');
-        return;
+      if (!isNative && typeof globalThis.localStorage !== 'undefined') {
+        removeWebStorage(globalThis.localStorage);
+      }
+      if (!isNative && typeof globalThis.sessionStorage !== 'undefined') {
+        removeWebStorage(globalThis.sessionStorage);
       }
       memToken = null;
     },

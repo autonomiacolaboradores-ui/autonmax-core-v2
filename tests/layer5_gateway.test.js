@@ -39,6 +39,8 @@ const { SseManager } = require('../core/gateway/events/SseManager');
 const { WebhookDispatcher } = require('../core/gateway/events/WebhookDispatcher');
 const { GatewayServer } = require('../core/gateway/Server');
 const { LifecycleManager } = require('../core/lifecycle/LifecycleManager');
+const { KeepAliveService } = require('../core/lifecycle/KeepAliveService');
+const { SqliteResilienceService } = require('../core/lifecycle/SqliteResilienceService');
 const { bootstrap } = require('../bin/start');
 
 async function createE2EFixture(options = {}) {
@@ -1061,6 +1063,174 @@ describe('Layer 5 — Gateway REST, Eventos/Webhooks & Boot E2E', () => {
       assert.equal(overPdfRes.status, 400);
     } finally {
       await fx.cleanup();
+    }
+  });
+
+  test('8. KeepAliveService respeita RENDER_EXTERNAL_URL, não roda sem URL ou em NODE_ENV=test e encerra limpo via LifecycleManager', async () => {
+    assert.equal(KeepAliveService.DEFAULT_KEEP_ALIVE_INTERVAL_MS, 420_000);
+
+    // 1. Sem URL configurada -> não inicia
+    const noUrlKa = new KeepAliveService({
+      targetUrl: '',
+      nodeEnv: 'production',
+      fetchImpl: async () => ({ ok: true, status: 200 }),
+    });
+    assert.equal(noUrlKa.intervalMs, 420_000);
+    const noUrlStart = noUrlKa.start();
+    assert.equal(noUrlStart.started, false);
+    assert.equal(noUrlStart.reason, 'NO_TARGET_URL');
+
+    // 2. Em NODE_ENV=test (sem enabled=true) -> não inicia mesmo com URL
+    const testEnvKa = new KeepAliveService({
+      targetUrl: 'https://autonmax-vnext-free.onrender.com',
+      nodeEnv: 'test',
+      fetchImpl: async () => ({ ok: true, status: 200 }),
+    });
+    const testStart = testEnvKa.start();
+    assert.equal(testStart.started, false);
+    assert.equal(testStart.reason, 'TEST_ENVIRONMENT');
+
+    // 3. Com RENDER_EXTERNAL_URL em produção -> normaliza /health, pinga e para limpo via LifecycleManager
+    const pingedUrls = [];
+    const ka = new KeepAliveService({
+      targetUrl: 'https://autonmax-vnext-free.onrender.com/',
+      intervalMs: 30,
+      timeoutMs: 1000,
+      nodeEnv: 'production',
+      fetchImpl: async (url, init) => {
+        pingedUrls.push({ url, hasSignal: Boolean(init?.signal) });
+        return { ok: true, status: 200 };
+      },
+    });
+    const lifecycle = new LifecycleManager({ drainTimeoutMs: 1000 });
+    lifecycle.register('keep-alive', () => ka.stop());
+
+    try {
+      const started = ka.start();
+      assert.equal(started.started, true);
+      assert.equal(started.targetUrl, 'https://autonmax-vnext-free.onrender.com/health');
+
+      await new Promise((r) => setTimeout(r, 80));
+      assert.ok(pingedUrls.length >= 1, 'Expected at least 1 keep-alive ping');
+      assert.equal(pingedUrls[0].url, 'https://autonmax-vnext-free.onrender.com/health');
+      assert.equal(pingedUrls[0].hasSignal, true);
+
+      const shutdownRes = await lifecycle.shutdown('test-keepalive-stop');
+      assert.equal(shutdownRes.ok, true);
+      assert.equal(ka.getStatus().running, false);
+
+      const countAfterStop = pingedUrls.length;
+      await new Promise((r) => setTimeout(r, 70));
+      assert.equal(pingedUrls.length, countAfterStop, 'Timer must stop after LifecycleManager shutdown');
+    } finally {
+      await lifecycle.shutdown('finally');
+    }
+  });
+
+  test('9. Persistência de Conta & SQLite: seed idempotente (ADMIN_EMAIL/ADMIN_PASSWORD), JWT 30 dias e recuperação via SqliteResilienceService shadow backup', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'autonmax-l5-persist-'));
+    const dbPath = path.join(tmpDir, 'persist.db');
+    const sessionsDir = path.join(tmpDir, 'sessions');
+
+    const mockAdapter = {
+      async connect() {},
+      async disconnect() {},
+      async getStatus() { return 'DISCONNECTED'; },
+      async getQr() { return null; },
+      async sendMessage() { return { messageId: 'm1', timestamp: new Date().toISOString() }; },
+      async sendPresence() {},
+      onMessage() { return () => {}; },
+      async close() {},
+    };
+
+    const boot1 = await bootstrap({
+      dbPath,
+      sessionsDir,
+      port: 0,
+      host: '127.0.0.1',
+      startWorker: false,
+      startWatchdog: false,
+      startKeepAlive: false,
+      enableSqliteBackup: true,
+      dbBackupIntervalMs: 60_000,
+      installSignals: false,
+      adminEmail: 'owner@autonmax.dev',
+      adminPassword: 'StrongPassword@2026',
+      adminDisplayName: 'Barbearia Soberana',
+      adminStoreSegment: 'Beleza',
+      adminPartnerId: 'prt-admin-seed',
+      channelAdapter: mockAdapter,
+    });
+
+    try {
+      assert.equal(boot1.seededPartner.seeded, true);
+      assert.equal(boot1.seededPartner.partner.id, 'prt-admin-seed');
+
+      // Login imediato com a conta semeada + verificação de JWT 30 dias
+      const loginRes = await fetch(`${boot1.listenInfo.baseUrl}/api/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'owner@autonmax.dev',
+          password: 'StrongPassword@2026',
+        }),
+      });
+      assert.equal(loginRes.status, 200);
+      const loginJson = await loginRes.json();
+      assert.equal(loginJson.data.partner.id, 'prt-admin-seed');
+      const ttlMs = loginJson.data.expiresAt - Date.now();
+      assert.ok(ttlMs > 29 * 24 * 60 * 60 * 1000, `Expected ~30-day JWT TTL, got ${ttlMs}ms`);
+
+      // Personaliza perfil PME para confirmar que re-boot idempotente não sobrescreve dados
+      const updateRes = await fetch(
+        `${boot1.listenInfo.baseUrl}/api/v1/partners/prt-admin-seed/config`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${loginJson.data.token}`,
+          },
+          body: JSON.stringify({ displayName: 'Barbearia Customizada' }),
+        }
+      );
+      assert.equal(updateRes.status, 200);
+
+      // Shutdown grava shadow backup e fecha SQLite com WAL checkpoint
+      await boot1.lifecycle.shutdown('persist-restart');
+      const shadowPath = SqliteResilienceService.resolveShadowPath(dbPath);
+      assert.equal(fs.existsSync(shadowPath), true);
+
+      // Simula corrupção/perda do arquivo principal e confirma restauração automática via shadow backup no boot 2
+      fs.rmSync(dbPath, { force: true });
+      assert.equal(fs.existsSync(dbPath), false);
+
+      const boot2 = await bootstrap({
+        dbPath,
+        sessionsDir,
+        port: 0,
+        host: '127.0.0.1',
+        startWorker: false,
+        startWatchdog: false,
+        startKeepAlive: false,
+        enableSqliteBackup: false,
+        installSignals: false,
+        adminEmail: 'owner@autonmax.dev',
+        adminPassword: 'StrongPassword@2026',
+        adminDisplayName: 'Barbearia Soberana',
+        adminPartnerId: 'prt-admin-seed',
+        channelAdapter: mockAdapter,
+      });
+
+      try {
+        assert.equal(boot2.seededPartner.seeded, false);
+        assert.equal(boot2.seededPartner.reason, 'ALREADY_EXISTS');
+        assert.equal(boot2.seededPartner.partner.display_name, 'Barbearia Customizada');
+      } finally {
+        await boot2.lifecycle.shutdown('boot2-cleanup');
+      }
+    } finally {
+      await boot1.lifecycle.shutdown('boot1-finally');
+      fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
 });

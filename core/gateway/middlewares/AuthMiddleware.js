@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 
 const DEFAULT_JSON_LIMIT_BYTES = 2 * 1024 * 1024; // 2 MiB
 const UPLOAD_JSON_LIMIT_BYTES = 15 * 1024 * 1024; // 15 MiB
+const DEFAULT_JWT_TTL_SECONDS = 30 * 24 * 60 * 60; // 30 days (aligned with legacy session persistence)
 
 /**
  * Constant-time string equality using `crypto.timingSafeEqual`.
@@ -69,9 +70,12 @@ class AuthMiddleware {
    * @returns {{ token: string, expiresAtMs: number }}
    */
   signJwt(payload, options = {}) {
+    const envTtl = Number(process.env.JWT_TTL_SECONDS);
+    const defaultTtl =
+      Number.isFinite(envTtl) && envTtl > 0 ? Math.trunc(envTtl) : DEFAULT_JWT_TTL_SECONDS;
     const ttlSec = Number.isInteger(options.expiresInSeconds)
       ? options.expiresInSeconds
-      : 86400;
+      : defaultTtl;
     const nowSec = Math.floor(Date.now() / 1000);
     const expSec = nowSec + ttlSec;
 
@@ -282,11 +286,13 @@ class AuthMiddleware {
 
 AuthMiddleware.DEFAULT_JSON_LIMIT_BYTES = DEFAULT_JSON_LIMIT_BYTES;
 AuthMiddleware.UPLOAD_JSON_LIMIT_BYTES = UPLOAD_JSON_LIMIT_BYTES;
+AuthMiddleware.DEFAULT_JWT_TTL_SECONDS = DEFAULT_JWT_TTL_SECONDS;
 AuthMiddleware.safeCompare = safeCompare;
 
 module.exports = {
   AuthMiddleware,
   DEFAULT_JSON_LIMIT_BYTES,
   UPLOAD_JSON_LIMIT_BYTES,
+  DEFAULT_JWT_TTL_SECONDS,
   safeCompare,
 };

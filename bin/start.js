@@ -27,12 +27,16 @@ const { LocalVoiceAdapter } = require('../core/ai/voice/LocalVoiceAdapter');
 
 const { WhatsAppBaileysAdapter } = require('../core/messaging/adapters/WhatsAppBaileysAdapter');
 const { SessionManager } = require('../core/messaging/SessionManager');
+const { SessionWatchdog } = require('../core/messaging/SessionWatchdog');
 const { MessageDebouncer } = require('../core/messaging/MessageDebouncer');
 const { OutboundQueueWorker } = require('../core/messaging/OutboundQueueWorker');
 const { PauseController } = require('../core/messaging/PauseController');
 
 const { GatewayServer } = require('../core/gateway/Server');
 const { LifecycleManager } = require('../core/lifecycle/LifecycleManager');
+const { KeepAliveService } = require('../core/lifecycle/KeepAliveService');
+const { SqliteResilienceService } = require('../core/lifecycle/SqliteResilienceService');
+const { seedDefaultPartner } = require('../core/lifecycle/AccountSeeder');
 
 /**
  * Loads `.env` safely (handling CRLF, spaces around `=`, quotes, and `#` comments)
@@ -112,10 +116,24 @@ async function bootstrap(options = {}) {
 
   const lifecycle = new LifecycleManager();
 
-  // Layer 1 — Storage SQLite & Migrations
+  // Layer 1 — Storage SQLite, Shadow Recovery & Migrations
+  const resolvedDbPath =
+    options.dbPath || process.env.DB_PATH || path.resolve(process.cwd(), 'workspace', 'autonmax.db');
+  SqliteResilienceService.restoreShadowIfMissing(resolvedDbPath);
+
   const dbManager = new DatabaseManager({ dbPath: options.dbPath });
   dbManager.init();
   lifecycle.register('sqlite-db', () => dbManager.close());
+
+  const sqliteResilience = new SqliteResilienceService({
+    dbManager,
+    intervalMs: options.dbBackupIntervalMs,
+    enabled: options.enableSqliteBackup,
+  });
+  if (options.startSqliteBackup !== false) {
+    sqliteResilience.start();
+  }
+  lifecycle.register('sqlite-resilience', () => sqliteResilience.stop());
 
   const partnerRepository = new PartnerRepository(dbManager);
   const authRepository = new AuthRepository(dbManager);
@@ -125,6 +143,16 @@ async function bootstrap(options = {}) {
   const appointmentRepository = new AppointmentRepository(dbManager);
   const orderRepository = new OrderRepository(dbManager);
   const queueRepository = new QueueRepository(dbManager);
+
+  // Idempotent default PME admin account seed (when ADMIN_EMAIL + ADMIN_PASSWORD configured)
+  const seededPartner = seedDefaultPartner({
+    partnerRepository,
+    email: options.adminEmail,
+    password: options.adminPassword,
+    displayName: options.adminDisplayName,
+    storeSegment: options.adminStoreSegment,
+    partnerId: options.adminPartnerId,
+  });
 
   // Layer 2 — Domain Services
   const catalogService = new CatalogService({ dbManager, catalogRepository });
@@ -204,11 +232,15 @@ async function bootstrap(options = {}) {
   });
   sessionManagerRef = sessionManager;
   sessionManager.bindInboundPipeline();
-  if (options.restoreSessions !== false) {
-    await sessionManager.restorePersistedSessions();
-  }
+
+  const sessionWatchdog = new SessionWatchdog({
+    sessionManager,
+    intervalMs: options.watchdogIntervalMs,
+    enabled: options.enableWatchdog,
+  });
 
   lifecycle.register('messaging-sessions', () => sessionManager.close());
+  lifecycle.register('session-watchdog', () => sessionWatchdog.stop());
   if (options.startWorker !== false) {
     outboxWorker.start();
   }
@@ -244,6 +276,47 @@ async function bootstrap(options = {}) {
     });
   }
 
+  // Restore previously paired Baileys sessions after HTTP port is open
+  let restoredSessions = [];
+  if (options.restoreSessions !== false) {
+    if (options.restoreSessionsInBackground === true) {
+      const restoreTimer = setImmediate(() => {
+        sessionManager
+          .restorePersistedSessions()
+          .then((keys) => {
+            if (keys.length > 0) {
+              console.log(
+                `[AUTONMAX vNext] Restored ${keys.length} WhatsApp session(s): ${keys.join(', ')}`
+              );
+            }
+          })
+          .catch((err) => {
+            console.warn('[AUTONMAX vNext] Background session restore error:', err?.message);
+          });
+      });
+      if (typeof restoreTimer.unref === 'function') restoreTimer.unref();
+    } else {
+      restoredSessions = await sessionManager.restorePersistedSessions();
+    }
+  }
+
+  if (options.startWatchdog !== false) {
+    sessionWatchdog.start();
+  }
+
+  // Anti-hibernation keep-alive (active only when RENDER_EXTERNAL_URL / KEEP_ALIVE_URL is set)
+  const keepAlive = new KeepAliveService({
+    targetUrl: options.keepAliveUrl,
+    intervalMs: options.keepAliveIntervalMs,
+    timeoutMs: options.keepAliveTimeoutMs,
+    enabled: options.enableKeepAlive,
+    fetchImpl: options.keepAliveFetchImpl,
+  });
+  lifecycle.register('keep-alive', () => keepAlive.stop());
+  if (options.startKeepAlive !== false) {
+    keepAlive.start();
+  }
+
   if (options.installSignals !== false) {
     lifecycle.installSignals();
   }
@@ -251,10 +324,15 @@ async function bootstrap(options = {}) {
   return {
     lifecycle,
     dbManager,
+    sqliteResilience,
+    seededPartner,
     promptPin,
     llmRouter,
     agentEngine,
     sessionManager,
+    sessionWatchdog,
+    restoredSessions,
+    keepAlive,
     outboxWorker,
     pauseController,
     server,
@@ -263,11 +341,18 @@ async function bootstrap(options = {}) {
 }
 
 if (require.main === module) {
-  bootstrap()
-    .then(({ listenInfo, llmRouter }) => {
+  bootstrap({ restoreSessionsInBackground: true })
+    .then(({ listenInfo, llmRouter, keepAlive, seededPartner }) => {
       if (listenInfo) {
+        const kaStatus = keepAlive?.getStatus?.();
+        const kaSummary = kaStatus?.running
+          ? `keepAlive=${kaStatus.targetUrl} (${Math.round(kaStatus.intervalMs / 1000)}s)`
+          : 'keepAlive=off';
+        const seedSummary = seededPartner?.seeded
+          ? `, seededAdmin=${seededPartner.partner?.email}`
+          : '';
         console.log(
-          `[AUTONMAX vNext] Server listening on http://localhost:${listenInfo.port} (host=${listenInfo.address}, groqModel=${llmRouter.models.groq})`
+          `[AUTONMAX vNext] Server listening on http://localhost:${listenInfo.port} (host=${listenInfo.address}, groqModel=${llmRouter.models.groq}, ${kaSummary}${seedSummary})`
         );
       }
     })

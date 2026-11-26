@@ -15,6 +15,26 @@ const { OutboundQueueWorker } = require('./OutboundQueueWorker');
 const DEFAULT_MAX_LINES_PER_PARTNER = 2;
 
 /**
+ * Validates that a Baileys `creds.json` file exists and contains a non-empty JSON object.
+ * Prevents spawning reconnect loops for empty or corrupted credential files.
+ * @param {string} credsPath
+ * @returns {boolean}
+ */
+function isValidCredsFile(credsPath) {
+  if (!credsPath || !fs.existsSync(credsPath)) return false;
+  try {
+    const stat = fs.statSync(credsPath);
+    if (!stat.isFile() || stat.size < 2) return false;
+    const raw = fs.readFileSync(credsPath, 'utf8').trim();
+    if (!raw) return false;
+    const parsed = JSON.parse(raw);
+    return Boolean(parsed && typeof parsed === 'object' && !Array.isArray(parsed) && Object.keys(parsed).length > 0);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Sanitizes a segment or full key strictly for Windows NTFS compatibility
  * (replaces `:` and non-alphanumeric chars with `_`, avoiding ADS path failures).
  * @param {string} raw
@@ -156,17 +176,18 @@ class SessionManager {
   }
 
   /**
-   * Validates that `partnerId` exists and is active before creating/resolving a session.
+   * Validates that `partnerId` exists and is active (unless `allowPaused` is set for
+   * Soft-Pause Global socket restoration) before creating/resolving a session.
    * @private
    */
-  _authorizePartner(partnerId) {
+  _authorizePartner(partnerId, options = {}) {
     const partner = this.partnerRepository.findById(partnerId);
     if (!partner) {
       const err = new Error(`PARTNER_NOT_FOUND: ${partnerId}`);
       err.code = 'PARTNER_NOT_FOUND';
       throw err;
     }
-    if (Number(partner.is_active) !== 1) {
+    if (!options.allowPaused && Number(partner.is_active) !== 1) {
       const err = new Error(`PARTNER_INACTIVE: ${partnerId}`);
       err.code = 'PARTNER_INACTIVE';
       throw err;
@@ -179,9 +200,10 @@ class SessionManager {
    * enforcing `MAX_LINES_PER_PARTNER` and NTFS path safety.
    * @param {string} partnerId
    * @param {string} [lineId='default']
+   * @param {{ allowPaused?: boolean }} [options]
    */
-  createOrGetSession(partnerId, lineId = 'default') {
-    this._authorizePartner(partnerId);
+  createOrGetSession(partnerId, lineId = 'default', options = {}) {
+    this._authorizePartner(partnerId, options);
     const sessionKey = buildSessionKey(partnerId, lineId);
 
     if (this._sessions.has(sessionKey)) {
@@ -233,9 +255,10 @@ class SessionManager {
    * Connects a session via ChannelAdapter after partner authorization.
    * @param {string} partnerId
    * @param {string} [lineId='default']
+   * @param {{ allowPaused?: boolean }} [options]
    */
-  async connectSession(partnerId, lineId = 'default') {
-    const entry = this.createOrGetSession(partnerId, lineId);
+  async connectSession(partnerId, lineId = 'default', options = {}) {
+    const entry = this.createOrGetSession(partnerId, lineId, options);
     await this.channelAdapter.connect(entry.sessionKey);
     return entry;
   }
@@ -275,6 +298,13 @@ class SessionManager {
         fs.mkdirSync(target, { recursive: true });
       }
     }
+  }
+
+  /**
+   * Returns all currently registered session descriptors.
+   */
+  listRegisteredSessions() {
+    return Array.from(this._sessions.values());
   }
 
   /**
@@ -519,8 +549,9 @@ class SessionManager {
   }
 
   /**
-   * Restores previously paired sessions (those with `baileys_auth/creds.json`)
-   * from `this.sessionsDir` after an app restart.
+   * Restores previously paired sessions (those with a valid `baileys_auth/creds.json`)
+   * from `this.sessionsDir` after an app restart, including partners in Soft-Pause Global
+   * so their WhatsApp socket stays online while AI remains silent.
    * @returns {Promise<string[]>} Restored sessionKeys
    */
   async restorePersistedSessions() {
@@ -531,7 +562,7 @@ class SessionManager {
       if (!dirEntry.isDirectory()) continue;
       const sessionDir = path.join(this.sessionsDir, dirEntry.name);
       const credsPath = path.join(sessionDir, 'baileys_auth', 'creds.json');
-      if (!fs.existsSync(credsPath)) continue;
+      if (!isValidCredsFile(credsPath)) continue;
 
       let meta = null;
       const metaPath = path.join(sessionDir, 'session.json');
@@ -544,20 +575,36 @@ class SessionManager {
       }
 
       if (!meta?.partnerId && dirEntry.name.startsWith('pme_')) {
-        const rawPartnerId = dirEntry.name.slice(4);
-        const partner = this.partnerRepository.findById(rawPartnerId);
-        if (partner) {
-          meta = { partnerId: partner.id, lineId: 'default' };
+        const suffix = dirEntry.name.slice(4);
+        const directPartner = this.partnerRepository.findById(suffix);
+        if (directPartner) {
+          meta = { partnerId: directPartner.id, lineId: 'default' };
+        } else {
+          const allPartners = this.partnerRepository.list();
+          for (const candidate of allPartners) {
+            const safePid = sanitizeNtfsName(candidate.id);
+            if (suffix === safePid) {
+              meta = { partnerId: candidate.id, lineId: 'default' };
+              break;
+            }
+            if (suffix.startsWith(`${safePid}_`)) {
+              const inferredLine = suffix.slice(safePid.length + 1) || 'default';
+              meta = { partnerId: candidate.id, lineId: inferredLine };
+              break;
+            }
+          }
         }
       }
 
       if (!meta?.partnerId) continue;
 
       try {
-        const session = await this.connectSession(meta.partnerId, meta.lineId || 'default');
+        const session = await this.connectSession(meta.partnerId, meta.lineId || 'default', {
+          allowPaused: true,
+        });
         restored.push(session.sessionKey);
       } catch {
-        // Ignore inactive/missing partners or transient startup errors
+        // Ignore missing partners or transient startup errors
       }
     }
     return restored;
@@ -589,6 +636,7 @@ SessionManager.DEFAULT_MAX_LINES_PER_PARTNER = DEFAULT_MAX_LINES_PER_PARTNER;
 SessionManager.sanitizeNtfsName = sanitizeNtfsName;
 SessionManager.buildSessionKey = buildSessionKey;
 SessionManager.parseSessionKey = parseSessionKey;
+SessionManager.isValidCredsFile = isValidCredsFile;
 
 module.exports = {
   SessionManager,
@@ -596,4 +644,5 @@ module.exports = {
   sanitizeNtfsName,
   buildSessionKey,
   parseSessionKey,
+  isValidCredsFile,
 };

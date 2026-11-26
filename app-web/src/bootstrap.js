@@ -136,9 +136,48 @@ function initBrowserApp() {
     const res = await fetch(path, { ...options, headers });
     const json = await res.json().catch(() => ({}));
     if (!res.ok || json.ok === false) {
-      throw new Error(json?.error?.message || `HTTP ${res.status}`);
+      const err = new Error(json?.error?.message || `HTTP ${res.status}`);
+      err.status = res.status;
+      err.code = json?.error?.code || null;
+      throw err;
     }
     return json.data;
+  }
+
+  async function persistLocalSnapshot() {
+    try {
+      if (state.partner) {
+        await ui.ports.storage.set('partner_config', 'active_partner', {
+          id: 'active_partner',
+          partner: state.partner,
+          savedAt: Date.now(),
+        });
+      }
+      if (Array.isArray(state.catalogItems) && state.catalogItems.length > 0) {
+        for (const item of state.catalogItems) {
+          if (item && item.id) {
+            await ui.ports.storage.upsert('catalog_items', item);
+          }
+        }
+      }
+    } catch {
+      // Non-fatal offline cache write error
+    }
+  }
+
+  async function rehydrateLocalSnapshot() {
+    try {
+      const cached = await ui.ports.storage.get('partner_config', 'active_partner');
+      if (!cached || !cached.partner) return false;
+      state.partner = cached.partner;
+      const cachedCatalog = await ui.ports.storage.query('catalog_items').catch(() => []);
+      if (Array.isArray(cachedCatalog) && cachedCatalog.length > 0) {
+        state.catalogItems = cachedCatalog;
+      }
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   function renderAuthGate() {
@@ -266,6 +305,7 @@ function initBrowserApp() {
     state.waModalOpen = false;
     renderWaModal();
     await ui.ports.secureAuth.clearToken();
+    await ui.ports.storage.remove('partner_config', 'active_partner').catch(() => { });
     state.token = null;
     state.partner = null;
     state.sessionKey = null;
@@ -319,10 +359,12 @@ function initBrowserApp() {
         ).length;
         state.waStatus = firstSess?.status || state.waModalData.status || 'DISCONNECTED';
 
+        await persistLocalSnapshot();
         renderDashboardLocal();
       } else if (ui.activeView === 'catalog') {
         const items = await apiFetch(`/api/v1/partners/${pid}/catalog`).catch(() => state.catalogItems);
         state.catalogItems = Array.isArray(items) ? items : [];
+        await persistLocalSnapshot();
         renderCatalogState();
       } else if (ui.activeView === 'appointments') {
         const appts = await apiFetch(`/api/v1/partners/${pid}/appointments`).catch(() => []);
@@ -371,16 +413,36 @@ function initBrowserApp() {
       const session = await apiFetch('/api/v1/auth/session');
       if (session?.partner) {
         state.partner = session.partner;
+        await persistLocalSnapshot();
         renderAuthGate();
         await hydrateActiveView();
       } else {
+        await ui.ports.secureAuth.clearToken();
         state.token = null;
         renderAuthGate();
       }
-    } catch {
-      state.token = null;
-      state.partner = null;
-      renderAuthGate();
+    } catch (err) {
+      const status = Number(err?.status || 0);
+      const isAuthRejected = status === 401 || status === 403 || status === 404;
+      if (isAuthRejected) {
+        await ui.ports.secureAuth.clearToken();
+        state.token = null;
+        state.partner = null;
+        state.authMessage = 'Sessão expirada ou reiniciada. Faça login novamente.';
+        renderAuthGate();
+        return;
+      }
+
+      // Network / 5xx (e.g., Render Free cold start or offline): preserve token & rehydrate cached PME profile
+      const rehydrated = await rehydrateLocalSnapshot();
+      if (rehydrated && state.token && state.partner) {
+        renderAuthGate();
+        renderDashboardLocal();
+      } else {
+        state.token = null;
+        state.partner = null;
+        renderAuthGate();
+      }
     }
   }
 
@@ -478,6 +540,7 @@ function initBrowserApp() {
         state.token = data.token;
         state.partner = data.partner;
         await ui.ports.secureAuth.setToken(data.token);
+        await persistLocalSnapshot();
         renderAuthGate();
         await hydrateActiveView();
       } catch (err) {
@@ -504,7 +567,7 @@ function initBrowserApp() {
         await apiFetch(
           `/api/v1/channels/sessions/${encodeURIComponent(state.sessionKey)}/disconnect`,
           { method: 'POST', body: JSON.stringify({ wipeAuth: false }) }
-        ).catch(() => {});
+        ).catch(() => { });
         stopQrPolling();
         state.waModalData = {
           ...state.waModalData,
@@ -800,7 +863,7 @@ function initBrowserApp() {
     if (delId && pid) {
       await apiFetch(`/api/v1/partners/${pid}/catalog/${encodeURIComponent(delId)}`, {
         method: 'DELETE',
-      }).catch(() => {});
+      }).catch(() => { });
       await hydrateActiveView();
       return;
     }
@@ -860,7 +923,7 @@ function initBrowserApp() {
       await apiFetch(
         `/api/v1/partners/${pid}/orders/${encodeURIComponent(cancelOrderId)}/cancel`,
         { method: 'POST', body: JSON.stringify({}) }
-      ).catch(() => {});
+      ).catch(() => { });
       await hydrateActiveView();
       return;
     }
@@ -916,7 +979,7 @@ function initBrowserApp() {
           method: 'POST',
           body: JSON.stringify({ paused: !currentlyPaused }),
         }
-      ).catch(() => {});
+      ).catch(() => { });
       await hydrateActiveView();
       return;
     }

@@ -86,10 +86,13 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
       : DEFAULT_MAX_CONSECUTIVE_FAILURES;
     this.onQrUpdate = options.onQrUpdate || null;
     this.onConnectionChange = options.onConnectionChange || null;
+    this.onSessionSuperseded = options.onSessionSuperseded || null;
     this.logger = options.logger || console;
 
     /** @type {Map<string, Record<string, any>>} */
     this._sessions = new Map();
+    /** @type {Set<string>} */
+    this._recentGlobalSentIds = new Set();
   }
 
   /**
@@ -110,6 +113,7 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
         isInitializing: false,
         isPairingReset: false,
         phoneNumber: null,
+        lidNumber: null,
         lastEventTime: Date.now(),
         stabilityTimer: null,
         reconnectTimer: null,
@@ -129,12 +133,12 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
     return this.authDirResolver
       ? this.authDirResolver(sessionKey)
       : path.resolve(
-          process.cwd(),
-          'workspace',
-          'sessions',
-          String(sessionKey).replace(/[^a-zA-Z0-9_-]/g, '_'),
-          'baileys_auth'
-        );
+        process.cwd(),
+        'workspace',
+        'sessions',
+        String(sessionKey).replace(/[^a-zA-Z0-9_-]/g, '_'),
+        'baileys_auth'
+      );
   }
 
   /**
@@ -269,10 +273,10 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
       });
 
       // Ignore bulk history sync events to conserve RAM (512MB Render limit)
-      sock.ev.on('messaging-history.set', () => {});
-      sock.ev.on('chats.set', () => {});
-      sock.ev.on('contacts.set', () => {});
-      sock.ev.on('messages.set', () => {});
+      sock.ev.on('messaging-history.set', () => { });
+      sock.ev.on('chats.set', () => { });
+      sock.ev.on('contacts.set', () => { });
+      sock.ev.on('messages.set', () => { });
 
       sock.ev.on('messages.upsert', async (upsert) => {
         st.lastEventTime = Date.now();
@@ -302,18 +306,27 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
     const remoteJid = msg?.key?.remoteJid || '';
     const msgId = msg?.key?.id || '';
 
-    // 1. Anti-loop: ignore outbound / self-sent messages
-    if (!msgId || msg?.key?.fromMe === true || st.sentMsgIds.has(msgId)) {
+    // 1. Anti-loop: ignore outbound / self-sent messages (session-local & adapter-wide)
+    if (
+      !msgId ||
+      msg?.key?.fromMe === true ||
+      st.sentMsgIds.has(msgId) ||
+      this._recentGlobalSentIds.has(msgId)
+    ) {
       return;
     }
     if (!remoteJid || remoteJid.includes('status@broadcast')) {
       return;
     }
 
-    // 2. Anti-loop: ignore messages originating from the bot's own number
-    const myNumber = extractJidDigits(st.sock?.user?.id);
+    // 2. Anti-loop: ignore messages originating from the bot's own phone number OR own LID
+    const myNumber = extractJidDigits(st.sock?.user?.id) || st.phoneNumber || '';
+    const myLid = extractJidDigits(st.sock?.user?.lid) || st.lidNumber || '';
     const senderNumber = extractJidDigits(msg?.key?.participant || remoteJid);
-    if (myNumber && senderNumber && myNumber === senderNumber) {
+    if (
+      senderNumber &&
+      ((myNumber && myNumber === senderNumber) || (myLid && myLid === senderNumber))
+    ) {
       return;
     }
 
@@ -432,6 +445,15 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
       if (connectedDigits) {
         st.phoneNumber = connectedDigits;
       }
+      const connectedLid = extractJidDigits(st.sock?.user?.lid);
+      if (connectedLid) {
+        st.lidNumber = connectedLid;
+      }
+
+      // Enforce exclusive WhatsApp phone/LID ownership across sessions:
+      // if an older partner session is bound to the exact same WhatsApp number,
+      // disconnect and purge its stale creds so only the newly paired session responds.
+      this._evictDuplicatePhoneSessions(st);
 
       if (st.stabilityTimer) clearTimeout(st.stabilityTimer);
       st.stabilityTimer = setTimeout(() => {
@@ -459,9 +481,9 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const errMsg = String(
         lastDisconnect?.error?.message ||
-          lastDisconnect?.error?.stack ||
-          lastDisconnect?.error ||
-          ''
+        lastDisconnect?.error?.stack ||
+        lastDisconnect?.error ||
+        ''
       );
       const isLoggedOut =
         (DisconnectReason && statusCode === DisconnectReason.loggedOut) ||
@@ -559,6 +581,55 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
       if (typeof st.reconnectTimer.unref === 'function') {
         st.reconnectTimer.unref();
       }
+    }
+  }
+
+  /**
+   * Disconnects and wipes Baileys credentials of any older session currently bound
+   * to the same WhatsApp phoneNumber or LID as `activeState`, preventing dual-session
+   * duplicate replies and cross-account context leakage when the same number is re-paired.
+   * @param {Record<string, any>} activeState
+   * @private
+   */
+  _evictDuplicatePhoneSessions(activeState) {
+    const activePhone = activeState?.phoneNumber || '';
+    const activeLid = activeState?.lidNumber || '';
+    if (!activePhone && !activeLid) return;
+
+    for (const [otherKey, other] of this._sessions.entries()) {
+      if (otherKey === activeState.sessionKey) continue;
+      const otherPhone = extractJidDigits(other.sock?.user?.id) || other.phoneNumber || '';
+      const otherLid = extractJidDigits(other.sock?.user?.lid) || other.lidNumber || '';
+      const samePhone = Boolean(activePhone && otherPhone && activePhone === otherPhone);
+      const sameLid = Boolean(activeLid && otherLid && activeLid === otherLid);
+      if (!samePhone && !sameLid) continue;
+
+      this.logger.warn?.(
+        `[WA:${activeState.sessionKey}] Evicting superseded session "${otherKey}" bound to same WhatsApp account (${activePhone || activeLid})`
+      );
+      other.status = 'DISCONNECTED';
+      other.isInitializing = false;
+      other.isPairingReset = false;
+      other.lastQrBase64 = null;
+      other.lastRawQr = null;
+      other.phoneNumber = null;
+      other.lidNumber = null;
+      this._teardownSocket(other, 'SUPERSEDED_BY_NEWER_SESSION');
+
+      const otherAuthDir = this._resolveAuthDir(otherKey);
+      this._purgeAuthCredentials(otherAuthDir);
+
+      this.onConnectionChange?.({
+        sessionKey: otherKey,
+        status: 'DISCONNECTED',
+        reason: 'SUPERSEDED_BY_NEWER_SESSION',
+      });
+      this.onSessionSuperseded?.({
+        supersededSessionKey: otherKey,
+        activeSessionKey: activeState.sessionKey,
+        phoneNumber: activePhone || null,
+        lidNumber: activeLid || null,
+      });
     }
   }
 
@@ -812,6 +883,10 @@ class WhatsAppBaileysAdapter extends ChannelAdapter {
     st.sentMsgIds.add(messageId);
     if (st.sentMsgIds.size > 1000) {
       st.sentMsgIds = new Set(Array.from(st.sentMsgIds).slice(-500));
+    }
+    this._recentGlobalSentIds.add(messageId);
+    if (this._recentGlobalSentIds.size > 1000) {
+      this._recentGlobalSentIds = new Set(Array.from(this._recentGlobalSentIds).slice(-500));
     }
 
     if (payload.text) {

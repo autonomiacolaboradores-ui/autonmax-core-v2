@@ -778,4 +778,64 @@ describe('Layer 6 — Interface Híbrida Offline-First (SPA/PWA + Capacitor) & D
       else globalThis.Capacitor = prevCap;
     }
   });
+
+  test('13. DashboardView renderiza "Especializar o MAX" reutilizando displayName/storeSegment sem duplicar campos e exibe estado de carregamento/feedback', () => {
+    const ui = mountAutonmaxUI(
+      { innerHTML: '', style: { setProperty() {} } },
+      { shell_enabled: false, ui_mode: 'guided' }
+    );
+
+    try {
+      const idleHtml = ui.render({
+        dashboard: {
+          partner: {
+            displayName: 'Clínica Solar',
+            storeSegment: 'Dermatologia',
+            personalityPrompt: 'Prompt atual',
+          },
+          specializeDifferentiators: 'Atendimento com hora marcada e avaliação digital.',
+          specializing: false,
+          specializeFeedback: null,
+        },
+      });
+
+      // Reaproveita inputs existentes sem duplicar
+      assert.equal((idleHtml.match(/data-pme-field="displayName"/g) || []).length, 1);
+      assert.equal((idleHtml.match(/data-pme-field="storeSegment"/g) || []).length, 1);
+      assert.match(idleHtml, /data-specialize-field="differentiators"/);
+      assert.match(idleHtml, /Atendimento com hora marcada e avaliação digital\./);
+      assert.match(idleHtml, /data-action="specialize-max"[^>]*>.*Especializar o MAX/);
+
+      // Estado de carregamento: botão desabilitado + feedback claro
+      const loadingHtml = ui.render({
+        dashboard: {
+          partner: { displayName: 'Clínica Solar', storeSegment: 'Dermatologia' },
+          specializing: true,
+          specializeFeedback: {
+            ok: true,
+            message: 'Especializando o MAX para o seu segmento...',
+          },
+        },
+      });
+      assert.match(loadingHtml, /data-action="specialize-max"\s+disabled/);
+      assert.match(loadingHtml, /Especializando o MAX para o seu segmento\.\.\./);
+      assert.match(loadingHtml, /data-specialize-feedback="true"/);
+    } finally {
+      ui.unmount();
+    }
+  });
+
+  test('14. Exportação de PDFs (Agenda, Pedidos e Relatório Diário) em bootstrap.js envia Authorization Bearer via fetch+Blob (sem window.open anônimo)', () => {
+    const bootstrapSrc = fs.readFileSync(
+      path.join(VNEXT_ROOT, 'app-web/src/bootstrap.js'),
+      'utf8'
+    );
+    assert.match(bootstrapSrc, /async function openAuthenticatedPdf\(url, filename\)/);
+    assert.match(bootstrapSrc, /Authorization:\s*`Bearer \$\{state\.token\}`/);
+    assert.match(bootstrapSrc, /URL\.createObjectURL\(blob\)/);
+    assert.doesNotMatch(
+      bootstrapSrc,
+      /window\.open\(\s*`\/api\/v1\/partners\/\$\{encodeURIComponent\(partnerId\)\}\/(?:appointments|orders)\/pdf/
+    );
+  });
 });

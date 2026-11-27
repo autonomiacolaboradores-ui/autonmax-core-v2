@@ -18,6 +18,11 @@ const { InputGuard } = require('../core/ai/InputGuard');
 const { LlmRouter } = require('../core/ai/LlmRouter');
 const { AtomicOutputGuard } = require('../core/ai/AtomicOutputGuard');
 const { AgentEngine } = require('../core/ai/AgentEngine');
+const {
+  PersonaCompilerService,
+  DEFAULT_AGNOSTIC_SALES_PROMPT,
+  FIELD_LIMITS,
+} = require('../core/ai/PersonaCompilerService');
 const { VoiceAdapter } = require('../core/ai/voice/VoiceAdapter');
 const { CloudVoiceAdapter } = require('../core/ai/voice/CloudVoiceAdapter');
 const { LocalVoiceAdapter } = require('../core/ai/voice/LocalVoiceAdapter');
@@ -1130,5 +1135,116 @@ describe('Layer 3 — Motor Agêntico, Trava Atômica (Elo 3) & VoiceAdapter', (
     } finally {
       fx.dbManager.close();
     }
+  });
+
+  test('12. PersonaCompilerService ("Especializar o MAX"): compila 3 camadas, sanitiza R$/descontos/URLs, respeita tetos e tem fallback offline', async () => {
+    const capturedCalls = [];
+    const mockRouter = {
+      async generate(params) {
+        capturedCalls.push(params);
+        return {
+          ok: true,
+          status: 'SUCCESS',
+          providerUsed: 'groq',
+          model: 'openai/gpt-oss-120b',
+          text: [
+            '```json',
+            JSON.stringify({
+              postura_especialista:
+                'Acolha com linguagem simples sem jargões. Confira https://promo.example.com/oferta e ganhe 20% de desconto por R$ 49,90! ' +
+                'A'.repeat(260),
+              dominio_tecnico_pratico:
+                'Avalie tipo de cabelo, rotina de cuidados e durabilidade do corte. Não cobrar 50 reais fora da tabela. Visite www.barbearia.com.br para mais detalhes.',
+              duvidas_e_dores_comuns:
+                'Dúvidas sobre tempo de manutenção, estilo ideal para o formato do rosto e cuidados diários com 15% off.',
+              limites_eticos_do_segmento:
+                'Nunca garanta resultado químico sem teste de mecha presencial ou avaliação capilar prévia (evite prometer milagres).',
+            }),
+            '```',
+          ].join('\n'),
+          toolCalls: [],
+        };
+      },
+    };
+
+    const compiler = new PersonaCompilerService({ llmRouter: mockRouter });
+    const res = await compiler.generateSpecializedPersona({
+      businessName: 'Barbearia Soberana',
+      segment: 'Barbearia Clássica',
+      differentiators: 'Atendimento com hora marcada, toalha quente e ambiente climatizado.',
+      catalogItems: [
+        { id: 's1', name: 'Corte Degradê', item_type: 'SERVICE', price_cents: 6500 },
+        { id: 'p1', name: 'Pomada Matte', item_type: 'PRODUCT', price_cents: 4500 },
+      ],
+    });
+
+    // 1. Chamada ao LlmRouter sem tools, sem busca web e sem preços no contexto
+    assert.equal(capturedCalls.length, 1);
+    assert.deepEqual(capturedCalls[0].tools, []);
+    assert.equal(capturedCalls[0].userMessage.includes('6500'), false);
+    assert.equal(capturedCalls[0].userMessage.includes('R$'), false);
+    assert.match(capturedCalls[0].userMessage, /Corte Degradê \(SERVICE\)/);
+    assert.match(capturedCalls[0].userMessage, /Pomada Matte \(PRODUCT\)/);
+
+    // 2. Sanitização determinística: zero R$, reais, % desconto ou URLs; tetos respeitados
+    assert.equal(res.providerUsed, 'groq');
+    assert.equal(res.layers.layer1.businessName, 'Barbearia Soberana');
+    assert.equal(res.layers.layer1.segment, 'Barbearia Clássica');
+    assert.ok(res.layers.layer2.postura_especialista.length <= FIELD_LIMITS.postura_especialista);
+    assert.ok(res.layers.layer2.dominio_tecnico_pratico.length <= FIELD_LIMITS.dominio_tecnico_pratico);
+    assert.ok(res.layers.layer2.duvidas_e_dores_comuns.length <= FIELD_LIMITS.duvidas_e_dores_comuns);
+    assert.ok(res.layers.layer2.limites_eticos_do_segmento.length <= FIELD_LIMITS.limites_eticos_do_segmento);
+
+    const layer2Concat = Object.values(res.layers.layer2).join(' ');
+    assert.equal(/R\$|\breais\b|https?:\/\/|www\.|\d+\s*%/i.test(layer2Concat), false);
+
+    // 3. Prompt final contém as 3 camadas e DEFAULT_AGNOSTIC_SALES_PROMPT integral
+    assert.match(res.compiledPrompt, /# IDENTIDADE E DIFERENCIAIS DA EMPRESA/);
+    assert.match(res.compiledPrompt, /Barbearia Soberana/);
+    assert.match(res.compiledPrompt, /Barbearia Clássica/);
+    assert.match(res.compiledPrompt, /Atendimento com hora marcada/);
+    assert.match(res.compiledPrompt, /# ESPECIALIZAÇÃO NO SEGMENTO/);
+    assert.equal(res.compiledPrompt.includes(DEFAULT_AGNOSTIC_SALES_PROMPT), true);
+    assert.equal(res.charCount, res.compiledPrompt.length);
+
+    // 4. Compatibilidade com maxContextTokens (4096) no AgentEngine sem truncar catálogo nem histórico
+    const fx = createAgentFixture({ llmRouter: mockRouter });
+    try {
+      fx.partnerRepo.update(fx.partner.id, { personalityPrompt: res.compiledPrompt });
+      fx.conversationRepo.addMessage({
+        conversationId: fx.conversation.id,
+        partnerId: fx.partner.id,
+        direction: 'INBOUND',
+        role: 'user',
+        content: 'Oi, quero conhecer os serviços',
+      });
+      const ctx = fx.agent.buildContext({
+        partnerId: fx.partner.id,
+        customerId: fx.customer.id,
+        conversationId: fx.conversation.id,
+        currentUserMessage: 'Qual o valor do corte?',
+      });
+      assert.ok(ctx.tokensEstimated < 3000, `Expected headroom under 4096 tokens, got ${ctx.tokensEstimated}`);
+      assert.ok(ctx.systemPrompt.includes('[CATÁLOGO OFICIAL]'));
+      assert.ok(ctx.systemPrompt.includes('[svc-corte-l3] Corte Masculino'));
+      assert.equal(ctx.historyMessages.length, 1);
+    } finally {
+      fx.dbManager.close();
+    }
+
+    // 5. Fallback determinístico estruturado quando LLM falha / sem chaves configuradas
+    const offlineRouter = new LlmRouter({
+      keys: { groq: null, xai: null, openai: null, gemini: null, openrouter: null },
+    });
+    const offlineCompiler = new PersonaCompilerService({ llmRouter: offlineRouter });
+    const fbRes = await offlineCompiler.generateSpecializedPersona({
+      businessName: 'Clínica Vida',
+      segment: 'Odontologia',
+      differentiators: 'Atendimento humanizado e exames digitais.',
+    });
+    assert.equal(fbRes.providerUsed, 'deterministic_fallback');
+    assert.match(fbRes.layers.layer2.postura_especialista, /Odontologia/);
+    assert.ok(fbRes.layers.layer2.limites_eticos_do_segmento.length > 20);
+    assert.equal(fbRes.compiledPrompt.includes(DEFAULT_AGNOSTIC_SALES_PROMPT), true);
   });
 });

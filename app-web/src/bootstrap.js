@@ -77,6 +77,9 @@ function initBrowserApp() {
     convMessages: [],
     aiTestResult: null,
     pmeSaveFeedback: null,
+    specializeDifferentiators: '',
+    specializing: false,
+    specializeFeedback: null,
     appointmentsCount: 0,
     appointmentsTodayCount: 0,
     ordersCount: 0,
@@ -101,6 +104,40 @@ function initBrowserApp() {
     }, 1500);
   }
 
+  async function openAuthenticatedPdf(url, filename) {
+    if (!state.token) return { ok: false, error: 'UNAUTHORIZED' };
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${state.token}`,
+        Accept: 'application/pdf',
+      },
+    });
+    if (!res.ok) {
+      const errJson = await res.json().catch(() => ({}));
+      throw new Error(errJson?.error?.message || `Falha ao gerar PDF (HTTP ${res.status})`);
+    }
+    const blob = await res.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    const popup = window.open(blobUrl, '_blank', 'noopener,noreferrer');
+    if (!popup) {
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+    }
+    setTimeout(() => {
+      try {
+        URL.revokeObjectURL(blobUrl);
+      } catch {
+        // Ignore cleanup errors
+      }
+    }, 60_000);
+    return { ok: true, filename };
+  }
+
   const ui = mountAutonmaxUI(root, {
     shell_enabled: true,
     ui_mode: 'guided',
@@ -108,19 +145,19 @@ function initBrowserApp() {
     output_actions: {
       async exportAppointmentsPdf({ partnerId, dateStr }) {
         if (!state.token || !partnerId) return { ok: false };
-        window.open(
-          `/api/v1/partners/${encodeURIComponent(partnerId)}/appointments/pdf?date=${encodeURIComponent(dateStr)}`,
-          '_blank'
+        const safeDate = dateStr || getLocalDateStr();
+        return openAuthenticatedPdf(
+          `/api/v1/partners/${encodeURIComponent(partnerId)}/appointments/pdf?date=${encodeURIComponent(safeDate)}`,
+          `agenda_${safeDate}.pdf`
         );
-        return { ok: true };
       },
       async exportOrdersPdf({ partnerId, dateStr }) {
         if (!state.token || !partnerId) return { ok: false };
-        window.open(
-          `/api/v1/partners/${encodeURIComponent(partnerId)}/orders/pdf?date=${encodeURIComponent(dateStr)}`,
-          '_blank'
+        const safeDate = dateStr || getLocalDateStr();
+        return openAuthenticatedPdf(
+          `/api/v1/partners/${encodeURIComponent(partnerId)}/orders/pdf?date=${encodeURIComponent(safeDate)}`,
+          `pedidos_${safeDate}.pdf`
         );
-        return { ok: true };
       },
     },
   });
@@ -316,6 +353,9 @@ function initBrowserApp() {
     state.selectedConvId = null;
     state.convMessages = [];
     state.aiTestResult = null;
+    state.specializeDifferentiators = '';
+    state.specializing = false;
+    state.specializeFeedback = null;
     state.authError = '';
     state.authMessage = '';
     renderAuthGate();
@@ -469,6 +509,9 @@ function initBrowserApp() {
         waStatus: state.waStatus,
         aiTestResult: state.aiTestResult,
         pmeSaveFeedback: state.pmeSaveFeedback,
+        specializeDifferentiators: state.specializeDifferentiators,
+        specializing: state.specializing,
+        specializeFeedback: state.specializeFeedback,
       },
     });
   }
@@ -479,6 +522,10 @@ function initBrowserApp() {
       const key = el.getAttribute('data-pme-field');
       if (key) state.partner[key] = el.value;
     });
+    const diffEl = root.querySelector('[data-specialize-field="differentiators"]');
+    if (diffEl) {
+      state.specializeDifferentiators = diffEl.value || '';
+    }
   }
 
   function collectPmeFieldsFromDom() {
@@ -581,6 +628,10 @@ function initBrowserApp() {
   }
 
   root.addEventListener('input', (ev) => {
+    if (ev.target?.matches?.('[data-specialize-field="differentiators"]')) {
+      state.specializeDifferentiators = ev.target.value || '';
+      return;
+    }
     if (ev.target?.matches?.('[data-catalog-search]')) {
       state.catalogSearch = ev.target.value || '';
       renderCatalogState();
@@ -1004,6 +1055,73 @@ function initBrowserApp() {
       });
     } else if (action === 'export-catalog' && state.partner) {
       await ui.views.catalog.exportCatalog(state.partner.id, state.catalogItems, 'json');
+    } else if (action === 'specialize-max' && pid) {
+      if (state.specializing) return;
+      syncPmeFieldsIntoState();
+      const businessName = String(
+        state.partner?.displayName ?? state.partner?.display_name ?? ''
+      ).trim();
+      const segment = String(
+        state.partner?.storeSegment ?? state.partner?.store_segment ?? ''
+      ).trim();
+      const differentiators = String(state.specializeDifferentiators || '').trim();
+
+      if (!businessName || !segment) {
+        state.specializeFeedback = {
+          ok: false,
+          message:
+            'Preencha o Nome da Empresa e o Segmento em "Identidade do Estabelecimento" antes de especializar o MAX.',
+        };
+        renderDashboardLocal();
+        return;
+      }
+
+      const isOffline =
+        !ui.ports.network.isOnline() ||
+        (typeof navigator !== 'undefined' && navigator.onLine === false);
+      if (isOffline) {
+        state.specializeFeedback = {
+          ok: false,
+          message:
+            'É necessária conexão com a internet para especializar o MAX. Tente novamente quando estiver online.',
+        };
+        renderDashboardLocal();
+        return;
+      }
+
+      state.specializing = true;
+      state.specializeFeedback = {
+        ok: true,
+        message: 'Especializando o MAX para o seu segmento...',
+      };
+      renderDashboardLocal();
+
+      try {
+        const res = await apiFetch(`/api/v1/partners/${pid}/specialize-prompt`, {
+          method: 'POST',
+          body: JSON.stringify({
+            businessName,
+            segment,
+            differentiators,
+          }),
+        });
+        state.partner.personalityPrompt = res.compiledPrompt;
+        state.specializing = false;
+        state.specializeFeedback = {
+          ok: true,
+          message:
+            'Prompt especializado gerado! Revise o texto completo abaixo e clique em "Salvar Alterações do Max" para gravar.',
+        };
+        renderDashboardLocal();
+      } catch (err) {
+        state.specializing = false;
+        state.specializeFeedback = {
+          ok: false,
+          message:
+            err?.message || 'Não foi possível especializar o MAX no momento.',
+        };
+        renderDashboardLocal();
+      }
     } else if (action === 'save-pme-config' && pid) {
       const patch = collectPmeFieldsFromDom();
       try {

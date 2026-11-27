@@ -120,6 +120,10 @@ class GatewayServer {
       }),
       ...createPartnerRoutes({
         partnerRepository: deps.partnerRepository,
+        catalogRepository: deps.catalogRepository || deps.catalogService?.catalogRepository,
+        catalogService: deps.catalogService,
+        llmRouter: deps.llmRouter,
+        personaCompilerService: deps.personaCompilerService,
       }),
       ...createFeatureRoutes({
         partnerRepository: deps.partnerRepository,

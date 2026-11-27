@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { DEFAULT_AGNOSTIC_SALES_PROMPT } = require('../../ai/PersonaCompilerService');
 
 /**
  * Hashes a password using scrypt and a random 16-byte salt.
@@ -85,6 +86,10 @@ function createAuthRoutes(deps) {
           passwordHash: hashPassword(password),
           displayName,
           storeSegment: body.storeSegment ?? body.store_segment ?? null,
+          personalityPrompt:
+            body.personalityPrompt ??
+            body.personality_prompt ??
+            DEFAULT_AGNOSTIC_SALES_PROMPT,
         });
 
         const { token, expiresAtMs } = authMiddleware.signJwt({

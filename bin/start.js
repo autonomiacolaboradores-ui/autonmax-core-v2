@@ -251,6 +251,7 @@ async function bootstrap(options = {}) {
     dbManager,
     partnerRepository,
     authRepository,
+    catalogRepository,
     conversationRepository,
     appointmentRepository,
     queueRepository,

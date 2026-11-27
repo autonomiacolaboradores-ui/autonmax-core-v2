@@ -75,6 +75,9 @@ class DashboardView {
           ? JSON.stringify(policiesRaw, null, 2)
           : '';
     const saveFeedback = data.pmeSaveFeedback || null;
+    const specializeDifferentiators = String(data.specializeDifferentiators || '');
+    const specializing = Boolean(data.specializing);
+    const specializeFeedback = data.specializeFeedback || null;
 
     const pdfFiles = Array.isArray(partner.pdfFiles || partner.pdf_files)
       ? partner.pdfFiles || partner.pdf_files
@@ -231,8 +234,17 @@ class DashboardView {
       `  </div>`,
       `  <div class="pme-v2-grid">`,
       `    <div class="knowledge-card">`,
-      `      <div style="display:flex;align-items:center;gap:10px;margin-bottom:10px;"><div class="k-icon">${icon('file-text', { size: 20 })}</div><h4 style="margin:0;">Instruções do Max (Prompt)</h4></div>`,
-      `      <textarea class="dark-input" rows="4" data-pme-field="personalityPrompt" placeholder="Defina regras, tom de voz e comportamento...">${escapeHtml(personalityPrompt)}</textarea>`,
+      `      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-bottom:10px;">`,
+      `        <div style="display:flex;align-items:center;gap:10px;"><div class="k-icon">${icon('file-text', { size: 20 })}</div><h4 style="margin:0;">Instruções do Max (Prompt)</h4></div>`,
+      `        <button type="button" class="exec-action-btn primary" data-action="specialize-max" ${specializing ? 'disabled' : ''}>${icon('sparkles', { size: 16 })} <span>${specializing ? 'Especializando o MAX para o seu segmento...' : 'Especializar o MAX'}</span></button>`,
+      `      </div>`,
+      `      <label style="display:block;margin:0 0 6px;font-size:0.85rem;color:var(--color-text-muted);">Diferenciais e Principais Atividades da Empresa</label>`,
+      `      <textarea class="dark-input" rows="2" maxlength="450" data-specialize-field="differentiators" placeholder="Ex.: atendimento com hora marcada, garantia nos serviços, entrega rápida...">${escapeHtml(specializeDifferentiators)}</textarea>`,
+      specializeFeedback
+        ? `      <p class="auth-feedback ${specializeFeedback.ok ? 'success' : 'error'}" data-specialize-feedback="true" style="margin:10px 0;">${escapeHtml(specializeFeedback.message)}</p>`
+        : '',
+      `      <label style="display:block;margin:10px 0 6px;font-size:0.85rem;color:var(--color-text-muted);">Prompt Completo do Atendente (revise antes de salvar)</label>`,
+      `      <textarea class="dark-input" rows="6" data-pme-field="personalityPrompt" placeholder="Defina regras, tom de voz e comportamento...">${escapeHtml(personalityPrompt)}</textarea>`,
       `      <label style="display:block;margin:10px 0 6px;font-size:0.85rem;color:var(--color-text-muted);">Regras de Negócio</label>`,
       `      <textarea class="dark-input" rows="3" data-pme-field="businessRules" placeholder="Regras comerciais, prazos, garantia...">${escapeHtml(businessRulesText)}</textarea>`,
       `    </div>`,

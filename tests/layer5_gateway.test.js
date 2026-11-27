@@ -26,6 +26,7 @@ const { PdfService } = require('../core/domain/PdfService');
 const { PromptPin } = require('../core/ai/PromptPin');
 const { LlmRouter } = require('../core/ai/LlmRouter');
 const { AgentEngine } = require('../core/ai/AgentEngine');
+const { DEFAULT_AGNOSTIC_SALES_PROMPT } = require('../core/ai/PersonaCompilerService');
 
 const { WhatsAppBaileysAdapter } = require('../core/messaging/adapters/WhatsAppBaileysAdapter');
 const { SessionManager } = require('../core/messaging/SessionManager');
@@ -1231,6 +1232,133 @@ describe('Layer 5 — Gateway REST, Eventos/Webhooks & Boot E2E', () => {
     } finally {
       await boot1.lifecycle.shutdown('boot1-finally');
       fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  test('10. Novo parceiro nasce com DEFAULT_AGNOSTIC_SALES_PROMPT & POST /specialize-prompt respeita auth, isolamento, validação e não salva antes do PUT', async () => {
+    const routerCalls = [];
+    const fx = await createE2EFixture({
+      llmRouter: {
+        circuitBreaker: {},
+        async generate(params) {
+          routerCalls.push(params);
+          return {
+            ok: true,
+            status: 'SUCCESS',
+            providerUsed: 'gemini',
+            model: 'gemini-3-flash-preview',
+            text: JSON.stringify({
+              postura_especialista: 'Especialista acolhedor em estética automotiva com linguagem acessível.',
+              dominio_tecnico_pratico: 'Domina proteção de pintura, higienização interna e avaliação de estado do verniz.',
+              duvidas_e_dores_comuns: 'Dúvidas sobre tempo de serviço, durabilidade da vitrificação e cuidados pós-lavagem.',
+              limites_eticos_do_segmento: 'Nunca promete remoção total de riscos profundos sem inspeção presencial da lataria.',
+            }),
+            toolCalls: [],
+          };
+        },
+      },
+    });
+
+    try {
+      // 1. Registrar novo parceiro sem personalityPrompt -> nasce com DEFAULT_AGNOSTIC_SALES_PROMPT
+      const regRes = await fetch(`${fx.baseUrl}/api/v1/auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: 'prt-spec-1',
+          email: 'spec@autonmax.dev',
+          password: 'Password@123',
+          displayName: 'Studio Auto Brilho',
+          storeSegment: 'Estética Automotiva',
+        }),
+      });
+      assert.equal(regRes.status, 201);
+      const regJson = await regRes.json();
+      const token = regJson.data.token;
+      assert.equal(regJson.data.partner.personality_prompt, DEFAULT_AGNOSTIC_SALES_PROMPT);
+
+      // Cadastra item no catálogo com preço para validar que o preço NÃO vaza na chamada do compilador
+      const catRes = await fetch(`${fx.baseUrl}/api/v1/partners/prt-spec-1/catalog`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          id: 'svc-vitrif',
+          name: 'Vitrificação Cerâmica',
+          type: 'SERVICE',
+          priceCents: 129900,
+          durationMinutes: 180,
+        }),
+      });
+      assert.equal(catRes.status, 201);
+
+      // 2. 401 sem token
+      const unauthRes = await fetch(`${fx.baseUrl}/api/v1/partners/prt-spec-1/specialize-prompt`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ businessName: 'Studio Auto Brilho', segment: 'Estética Automotiva' }),
+      });
+      assert.equal(unauthRes.status, 401);
+
+      // 3. 403 para outro partnerId
+      const crossRes = await fetch(`${fx.baseUrl}/api/v1/partners/other-partner/specialize-prompt`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ businessName: 'Studio Auto Brilho', segment: 'Estética Automotiva' }),
+      });
+      assert.equal(crossRes.status, 403);
+
+      // 4. 400 sem businessName ou segment
+      const badRes = await fetch(`${fx.baseUrl}/api/v1/partners/prt-spec-1/specialize-prompt`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ businessName: 'Studio Auto Brilho', segment: '' }),
+      });
+      assert.equal(badRes.status, 400);
+      const badJson = await badRes.json();
+      assert.equal(badJson.error.code, 'VALIDATION_ERROR');
+
+      // 5. 200 retorna compiledPrompt + layers + providerUsed + charCount sem salvar no SQLite
+      const okRes = await fetch(`${fx.baseUrl}/api/v1/partners/prt-spec-1/specialize-prompt`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          businessName: 'Studio Auto Brilho',
+          segment: 'Estética Automotiva',
+          differentiators: 'Garantia de 2 anos e leva-e-traz gratuito.',
+        }),
+      });
+      assert.equal(okRes.status, 200);
+      const okJson = await okRes.json();
+      assert.equal(okJson.ok, true);
+      assert.equal(okJson.data.providerUsed, 'gemini');
+      assert.equal(okJson.data.charCount, okJson.data.compiledPrompt.length);
+      assert.match(okJson.data.compiledPrompt, /Studio Auto Brilho/);
+      assert.match(okJson.data.compiledPrompt, /Estética Automotiva/);
+      assert.match(okJson.data.compiledPrompt, /Garantia de 2 anos/);
+      assert.equal(okJson.data.compiledPrompt.includes(DEFAULT_AGNOSTIC_SALES_PROMPT), true);
+
+      // Confirma que o catálogo foi enviado apenas com nome/tipo (sem preço 129900)
+      assert.equal(routerCalls.length, 1);
+      assert.match(routerCalls[0].userMessage, /Vitrificação Cerâmica \(SERVICE\)/);
+      assert.equal(routerCalls[0].userMessage.includes('129900'), false);
+
+      // Confirma que o SQLite NÃO foi alterado antes do PUT /config
+      const dbBeforePut = fx.partnerRepository.findById('prt-spec-1');
+      assert.equal(dbBeforePut.personality_prompt, DEFAULT_AGNOSTIC_SALES_PROMPT);
+    } finally {
+      await fx.cleanup();
     }
   });
 });

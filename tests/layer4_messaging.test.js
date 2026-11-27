@@ -937,4 +937,140 @@ describe('Layer 4 — Mensageria Resiliente, Debouncer & Fila Anti-Ban', () => {
       await fx.cleanup();
     }
   });
+
+  test('12. Unicidade de Número WhatsApp (evita resposta duplicada/vazamento de perfil antigo) & Anti-Loop @lid', async () => {
+    const socketsByCall = [];
+    const emittedEvents = [];
+
+    const baileysAdapter = new WhatsAppBaileysAdapter({
+      baileysLoader: () => ({
+        makeWASocket: () => {
+          const idx = socketsByCall.length;
+          const sock = {
+            user: {
+              id: `553399735222:${idx + 1}@s.whatsapp.net`,
+              lid: `209844267176027:${idx + 1}@lid`,
+            },
+            ev: new EventEmitter(),
+            ws: { close() {} },
+            end() {},
+            async sendMessage(_jid, _content) {
+              return { key: { id: `bot_sent_${idx + 1}` } };
+            },
+          };
+          socketsByCall.push(sock);
+          return sock;
+        },
+        useMultiFileAuthState: async () => ({
+          state: { creds: {}, keys: {} },
+          saveCreds: async () => {},
+        }),
+        DisconnectReason: { loggedOut: 401 },
+        Browsers: { ubuntu: (b) => ['Ubuntu', b, '22.04'] },
+      }),
+      qrCodeLoader: () => ({
+        async toDataURL(qr) {
+          return `data:image/png;base64,${Buffer.from(qr).toString('base64')}`;
+        },
+      }),
+    });
+
+    const fx = createMessagingFixture({
+      channelAdapter: baileysAdapter,
+      debounceWindowMs: 20,
+    });
+    baileysAdapter.authDirResolver = (sk) =>
+      fx.sessionManager.resolveSessionPaths(sk).authDir;
+    baileysAdapter.partnerIdResolver = (sk) =>
+      sk.split(':')[1] || null;
+    baileysAdapter.onMessage((ev) => {
+      emittedEvents.push(ev);
+    });
+
+    try {
+      const partnerB = fx.partnerRepo.create({
+        id: 'usr_new_pme',
+        email: 'novo@autonmax.dev',
+        displayName: 'Nova PME',
+      });
+
+      // 1. Parceiro antigo (usr_1) conecta WhatsApp 553399735222
+      const sessA = await fx.sessionManager.connectSession(fx.partner.id);
+      const credsA = path.join(sessA.authDir, 'creds.json');
+      fs.writeFileSync(
+        credsA,
+        JSON.stringify({
+          me: { id: '553399735222:98@s.whatsapp.net', lid: '209844267176027:98@lid' },
+        })
+      );
+      socketsByCall[0].ev.emit('connection.update', { connection: 'open' });
+      assert.equal(await baileysAdapter.getStatus(sessA.sessionKey), 'CONNECTED');
+
+      // 2. Novo parceiro (usr_new_pme) pareia o MESMO WhatsApp 553399735222
+      const sessB = await fx.sessionManager.connectSession(partnerB.id);
+      const credsB = path.join(sessB.authDir, 'creds.json');
+      fs.writeFileSync(
+        credsB,
+        JSON.stringify({
+          me: { id: '553399735222:3@s.whatsapp.net', lid: '209844267176027:3@lid' },
+        })
+      );
+      socketsByCall[1].ev.emit('connection.update', { connection: 'open' });
+
+      // Sessão antiga é desconectada, removida do SessionManager e tem creds.json expurgado
+      assert.equal(await baileysAdapter.getStatus(sessB.sessionKey), 'CONNECTED');
+      assert.equal(await baileysAdapter.getStatus(sessA.sessionKey), 'DISCONNECTED');
+      assert.equal(fs.existsSync(credsA), false);
+      assert.equal(fx.sessionManager.listPartnerSessions(fx.partner.id).length, 0);
+      assert.equal(fx.sessionManager.listPartnerSessions(partnerB.id).length, 1);
+
+      // 3. Anti-loop ignora próprio @lid e própria mensagem enviada (sentMsgIds)
+      await baileysAdapter.sendMessage(sessB.sessionKey, '88446479675596@lid', {
+        text: 'Resposta oficial do Max',
+      });
+      socketsByCall[1].ev.emit('messages.upsert', {
+        type: 'notify',
+        messages: [
+          {
+            key: { id: 'lid-self-1', fromMe: false, remoteJid: '209844267176027@lid' },
+            message: { conversation: 'Mensagem do próprio LID' },
+          },
+          {
+            key: { id: 'bot_sent_2', fromMe: false, remoteJid: '88446479675596@lid' },
+            message: { conversation: 'Eco com ID já enviado' },
+          },
+          {
+            key: { id: 'cust-real-1', fromMe: false, remoteJid: '88446479675596@lid' },
+            message: { conversation: 'Boa noite, quero atendimento' },
+          },
+        ],
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      assert.equal(emittedEvents.length, 1);
+      assert.equal(emittedEvents[0].partnerId, partnerB.id);
+      assert.equal(emittedEvents[0].msgId, 'cust-real-1');
+
+      // 4. Deduplicação no boot (restorePersistedSessions): 2 pastas com mesmo número -> restaura SÓ a mais recente
+      await fx.sessionManager.disconnectSession(sessB.sessionKey);
+      fs.writeFileSync(
+        credsA,
+        JSON.stringify({
+          me: { id: '553399735222:98@s.whatsapp.net', lid: '209844267176027:98@lid' },
+        })
+      );
+      const olderTime = new Date(Date.now() - 60_000);
+      fs.utimesSync(credsA, olderTime, olderTime);
+      fs.writeFileSync(
+        credsB,
+        JSON.stringify({
+          me: { id: '553399735222:3@s.whatsapp.net', lid: '209844267176027:3@lid' },
+        })
+      );
+
+      const restored = await fx.sessionManager.restorePersistedSessions();
+      assert.deepEqual(restored, [sessB.sessionKey]);
+    } finally {
+      await fx.cleanup();
+    }
+  });
 });

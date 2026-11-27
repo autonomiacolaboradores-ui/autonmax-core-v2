@@ -1,6 +1,7 @@
 'use strict';
 
 const { hashPassword } = require('../gateway/routes/AuthRoutes');
+const { DEFAULT_AGNOSTIC_SALES_PROMPT } = require('../ai/PersonaCompilerService');
 
 /**
  * Idempotently seeds a default PME administrator partner account on boot when
@@ -62,6 +63,7 @@ function seedDefaultPartner(deps = {}) {
     passwordHash: hashPassword(password),
     displayName,
     storeSegment,
+    personalityPrompt: deps.personalityPrompt ?? DEFAULT_AGNOSTIC_SALES_PROMPT,
   });
 
   return { seeded: true, reason: 'CREATED', partner };

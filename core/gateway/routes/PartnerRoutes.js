@@ -1,14 +1,23 @@
 'use strict';
 
+const { PersonaCompilerService } = require('../../ai/PersonaCompilerService');
+
 /**
- * Registers partner configuration routes (`GET/PUT /api/v1/partners/:partnerId/config`).
+ * Registers partner configuration routes (`GET/PUT /api/v1/partners/:partnerId/config`)
+ * and 3-layer persona compilation (`POST /api/v1/partners/:partnerId/specialize-prompt`).
  * Supports 15 MiB payload limit for PDF/image metadata updates.
  * @param {{
- *   partnerRepository: import('../../storage/repositories/PartnerRepository').PartnerRepository
+ *   partnerRepository: import('../../storage/repositories/PartnerRepository').PartnerRepository,
+ *   catalogRepository?: import('../../storage/repositories/CatalogRepository').CatalogRepository,
+ *   catalogService?: import('../../domain/CatalogService').CatalogService,
+ *   llmRouter?: import('../../ai/LlmRouter').LlmRouter,
+ *   personaCompilerService?: PersonaCompilerService
  * }} deps
  */
 function createPartnerRoutes(deps) {
-  const { partnerRepository } = deps;
+  const { partnerRepository, catalogRepository, catalogService, llmRouter } = deps;
+  const personaCompiler =
+    deps.personaCompilerService || new PersonaCompilerService({ llmRouter });
 
   function toPartnerConfigDto(partner) {
     return {
@@ -86,6 +95,54 @@ function createPartnerRoutes(deps) {
 
         const updated = partnerRepository.update(params.partnerId, patch);
         return sendOk(toPartnerConfigDto(updated));
+      },
+    },
+    {
+      method: 'POST',
+      path: '/api/v1/partners/:partnerId/specialize-prompt',
+      handler: async ({ params, body, sendOk, sendError }) => {
+        const existing = partnerRepository.findById(params.partnerId);
+        if (!existing) {
+          return sendError(404, 'PARTNER_NOT_FOUND', 'Parceiro não encontrado.');
+        }
+
+        const businessName = String(body.businessName ?? '').trim();
+        const segment = String(body.segment ?? '').trim();
+        const differentiators = String(body.differentiators ?? body.activities ?? '').trim();
+
+        if (!businessName || !segment) {
+          return sendError(
+            400,
+            'VALIDATION_ERROR',
+            'Informe o Nome da Empresa (businessName) e o Segmento (segment) para especializar o MAX.'
+          );
+        }
+
+        const rawCatalog = catalogRepository
+          ? catalogRepository.listByPartner(params.partnerId, { activeOnly: true })
+          : catalogService
+            ? catalogService.listItems(params.partnerId)
+            : [];
+
+        // Pass strictly names & types (never prices) to the specialization compiler
+        const safeCatalogItems = (Array.isArray(rawCatalog) ? rawCatalog : []).map((it) => ({
+          name: it.name,
+          type: it.item_type || it.type || 'SERVICE',
+        }));
+
+        const result = await personaCompiler.generateSpecializedPersona({
+          businessName,
+          segment,
+          differentiators,
+          catalogItems: safeCatalogItems,
+        });
+
+        return sendOk({
+          compiledPrompt: result.compiledPrompt,
+          layers: result.layers,
+          providerUsed: result.providerUsed,
+          charCount: result.charCount,
+        });
       },
     },
   ];

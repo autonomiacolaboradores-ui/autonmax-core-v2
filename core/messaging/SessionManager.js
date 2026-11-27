@@ -35,6 +35,38 @@ function isValidCredsFile(credsPath) {
 }
 
 /**
+ * Extracts normalized WhatsApp phone/LID digits and mtime from a valid `creds.json` file
+ * so `restorePersistedSessions()` can deduplicate multiple sessions bound to the same number.
+ * @param {string} credsPath
+ * @returns {{ phoneNumber: string | null, lidNumber: string | null, mtimeMs: number } | null}
+ */
+function readCredsIdentity(credsPath) {
+  if (!credsPath || !fs.existsSync(credsPath)) return null;
+  try {
+    const stat = fs.statSync(credsPath);
+    if (!stat.isFile() || stat.size < 2) return null;
+    const raw = fs.readFileSync(credsPath, 'utf8').trim();
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || Object.keys(parsed).length === 0) {
+      return null;
+    }
+    const toDigits = (jid) =>
+      String(jid || '')
+        .split('@')[0]
+        .split(':')[0]
+        .replace(/\D/g, '') || null;
+    return {
+      phoneNumber: toDigits(parsed?.me?.id),
+      lidNumber: toDigits(parsed?.me?.lid),
+      mtimeMs: Number(stat.mtimeMs || 0),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Sanitizes a segment or full key strictly for Windows NTFS compatibility
  * (replaces `:` and non-alphanumeric chars with `_`, avoiding ADS path failures).
  * @param {string} raw
@@ -158,6 +190,18 @@ class SessionManager {
     this._batchWaiters = new Map();
     this._unsubscribeAdapter = null;
 
+    if (
+      this.channelAdapter &&
+      typeof this.channelAdapter === 'object' &&
+      !this.channelAdapter.onSessionSuperseded
+    ) {
+      this.channelAdapter.onSessionSuperseded = ({ supersededSessionKey }) => {
+        if (supersededSessionKey) {
+          this._sessions.delete(supersededSessionKey);
+        }
+      };
+    }
+
     fs.mkdirSync(this.sessionsDir, { recursive: true });
   }
 
@@ -223,13 +267,23 @@ class SessionManager {
     const { sanitizedKey, sessionDir, authDir } = this.resolveSessionPaths(sessionKey);
     fs.mkdirSync(authDir, { recursive: true });
     try {
+      const metaPath = path.join(sessionDir, 'session.json');
+      let existingCreatedAt = null;
+      if (fs.existsSync(metaPath)) {
+        try {
+          existingCreatedAt = JSON.parse(fs.readFileSync(metaPath, 'utf8'))?.createdAt || null;
+        } catch {
+          existingCreatedAt = null;
+        }
+      }
       fs.writeFileSync(
-        path.join(sessionDir, 'session.json'),
+        metaPath,
         JSON.stringify(
           {
             sessionKey,
             partnerId,
             lineId: String(lineId || 'default'),
+            createdAt: existingCreatedAt || Date.now(),
           },
           null,
           2
@@ -406,6 +460,9 @@ class SessionManager {
       if (eventKey) {
         this.queueRepository.markEventProcessed(eventKey, sessionKey);
       }
+      console.log(
+        `[SOFT_PAUSE] Suppressed AI reply partner=${partnerId} conv=${conversation.id} global=${isGlobalPartnerPaused} perConv=${isConversationPaused}`
+      );
       return {
         ok: true,
         paused: true,
@@ -552,17 +609,22 @@ class SessionManager {
    * Restores previously paired sessions (those with a valid `baileys_auth/creds.json`)
    * from `this.sessionsDir` after an app restart, including partners in Soft-Pause Global
    * so their WhatsApp socket stays online while AI remains silent.
+   *
+   * Deduplicates sessions bound to the exact same WhatsApp phoneNumber/LID so that if a
+   * number was re-paired on a newer PME account, ONLY the most recently updated session
+   * is restored (preventing duplicate replies and cross-account history leakage).
    * @returns {Promise<string[]>} Restored sessionKeys
    */
   async restorePersistedSessions() {
     if (!fs.existsSync(this.sessionsDir)) return [];
-    const restored = [];
+    const candidates = [];
     const entries = fs.readdirSync(this.sessionsDir, { withFileTypes: true });
     for (const dirEntry of entries) {
       if (!dirEntry.isDirectory()) continue;
       const sessionDir = path.join(this.sessionsDir, dirEntry.name);
       const credsPath = path.join(sessionDir, 'baileys_auth', 'creds.json');
-      if (!isValidCredsFile(credsPath)) continue;
+      const identity = readCredsIdentity(credsPath);
+      if (!identity) continue;
 
       let meta = null;
       const metaPath = path.join(sessionDir, 'session.json');
@@ -598,10 +660,68 @@ class SessionManager {
 
       if (!meta?.partnerId) continue;
 
+      let dirMtimeMs = identity.mtimeMs;
+      let sessionCreatedAtMs = Number(meta.pairedAt || meta.createdAt || 0);
       try {
-        const session = await this.connectSession(meta.partnerId, meta.lineId || 'default', {
+        if (!sessionCreatedAtMs && fs.existsSync(metaPath)) {
+          const metaStat = fs.statSync(metaPath);
+          sessionCreatedAtMs = Number(metaStat.birthtimeMs || metaStat.mtimeMs || 0);
+        }
+        const dirStat = fs.statSync(sessionDir);
+        if (dirStat.mtimeMs > dirMtimeMs) dirMtimeMs = dirStat.mtimeMs;
+      } catch {
+        // Ignore stat error
+      }
+
+      const partnerRow = this.partnerRepository.findById(meta.partnerId);
+      const partnerCreatedAtMs = partnerRow?.created_at
+        ? Date.parse(String(partnerRow.created_at).replace(' ', 'T') + 'Z') || 0
+        : 0;
+
+      candidates.push({
+        partnerId: meta.partnerId,
+        lineId: meta.lineId || 'default',
+        sessionKey: buildSessionKey(meta.partnerId, meta.lineId || 'default'),
+        phoneNumber: identity.phoneNumber,
+        lidNumber: identity.lidNumber,
+        mtimeMs: identity.mtimeMs,
+        dirMtimeMs,
+        sessionCreatedAtMs,
+        partnerCreatedAtMs,
+      });
+    }
+
+    // Sort newest pairing / newest partner first so Baileys key rotations on an older partner
+    // never hijack ownership from a more recently paired PME account.
+    candidates.sort(
+      (a, b) =>
+        b.sessionCreatedAtMs - a.sessionCreatedAtMs ||
+        b.partnerCreatedAtMs - a.partnerCreatedAtMs ||
+        b.mtimeMs - a.mtimeMs ||
+        b.dirMtimeMs - a.dirMtimeMs
+    );
+
+    const seenPhones = new Set();
+    const seenLids = new Set();
+    const restored = [];
+
+    for (const item of candidates) {
+      if (
+        (item.phoneNumber && seenPhones.has(item.phoneNumber)) ||
+        (item.lidNumber && seenLids.has(item.lidNumber))
+      ) {
+        console.warn(
+          `[SESSION_MANAGER] Skipping superseded persisted session "${item.sessionKey}" (WhatsApp ${item.phoneNumber || item.lidNumber} already claimed by a newer partner session)`
+        );
+        continue;
+      }
+
+      try {
+        const session = await this.connectSession(item.partnerId, item.lineId, {
           allowPaused: true,
         });
+        if (item.phoneNumber) seenPhones.add(item.phoneNumber);
+        if (item.lidNumber) seenLids.add(item.lidNumber);
         restored.push(session.sessionKey);
       } catch {
         // Ignore missing partners or transient startup errors
@@ -637,6 +757,7 @@ SessionManager.sanitizeNtfsName = sanitizeNtfsName;
 SessionManager.buildSessionKey = buildSessionKey;
 SessionManager.parseSessionKey = parseSessionKey;
 SessionManager.isValidCredsFile = isValidCredsFile;
+SessionManager.readCredsIdentity = readCredsIdentity;
 
 module.exports = {
   SessionManager,
@@ -645,4 +766,5 @@ module.exports = {
   buildSessionKey,
   parseSessionKey,
   isValidCredsFile,
+  readCredsIdentity,
 };

@@ -83,7 +83,8 @@ class PauseController {
   }
 
   /**
-   * Appends a message exchanged during Soft-Pause into `conversations.paused_context_json`.
+   * Appends a message exchanged during Soft-Pause into `conversations.paused_context_json`
+   * atomically inside `BEGIN IMMEDIATE` without clobbering `is_paused`.
    * @param {{ partnerId: string, conversationId: string, role?: 'customer' | 'operator', text: string, ts?: number }} params
    */
   recordPausedMessage({
@@ -96,29 +97,16 @@ class PauseController {
     const cleanText = String(text || '').trim().slice(0, 800);
     if (!cleanText) return null;
 
-    const existing = this.conversationRepository.findById(conversationId, { partnerId });
-    if (!existing) return null;
-
-    const current = Array.isArray(existing.paused_context)
-      ? existing.paused_context
-      : [];
-    const next = [...current, { ts, role, text: cleanText }].slice(
-      -this.maxPausedContext
-    );
-
-    return this.conversationRepository.setPaused(
+    return this.conversationRepository.appendPausedContext(
       conversationId,
-      Number(existing.is_paused) === 1,
-      {
-        partnerId,
-        pausedContext: next,
-      }
+      { ts, role, text: cleanText },
+      { partnerId, maxEntries: this.maxPausedContext }
     );
   }
 
   /**
    * Formats stored pause-window messages as a continuity hint for resuming AI turns.
-   * Optionally clears `paused_context_json` after consuming.
+   * Atomically reads and optionally clears `paused_context_json` without clobbering `is_paused`.
    * @param {{ partnerId: string, conversationId: string, clear?: boolean, maxEntries?: number }} params
    * @returns {string | null}
    */
@@ -128,23 +116,18 @@ class PauseController {
     clear = false,
     maxEntries = 12,
   }) {
-    const conv = this.conversationRepository.findById(conversationId, { partnerId });
-    if (!conv || !Array.isArray(conv.paused_context) || conv.paused_context.length === 0) {
+    const entries = this.conversationRepository.consumePausedContext(conversationId, {
+      partnerId,
+      clear,
+    });
+    if (!Array.isArray(entries) || entries.length === 0) {
       return null;
     }
 
-    const lines = conv.paused_context.slice(-maxEntries).map((entry) => {
+    const lines = entries.slice(-maxEntries).map((entry) => {
       const who = entry.role === 'operator' ? 'OPERADOR' : 'CLIENTE';
       return `${who}: ${entry.text}`;
     });
-
-    if (clear) {
-      this.conversationRepository.setPaused(
-        conversationId,
-        Number(conv.is_paused) === 1,
-        { partnerId, pausedContext: [] }
-      );
-    }
 
     return (
       'CONTEXTO ENQUANTO O ATENDIMENTO ESTAVA PAUSADO (humano no controle). Use para continuidade, sem repetir perguntas já respondidas:\n' +

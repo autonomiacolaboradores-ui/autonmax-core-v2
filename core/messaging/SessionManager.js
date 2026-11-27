@@ -188,6 +188,12 @@ class SessionManager {
     this._sessions = new Map();
     /** @type {Map<string, Array<{ resolve: Function, reject: Function }>>} */
     this._batchWaiters = new Map();
+    /** @type {Set<string>} */
+    this._inFlightEventKeys = new Set();
+    /** @type {Map<string, Promise<unknown>>} */
+    this._partnerLocks = new Map();
+    /** @type {Map<string, Promise<unknown>>} */
+    this._sessionLocks = new Map();
     this._unsubscribeAdapter = null;
 
     if (
@@ -306,52 +312,104 @@ class SessionManager {
   }
 
   /**
-   * Connects a session via ChannelAdapter after partner authorization.
+   * Serializes async operations sharing the same lock key (per partnerId or per sessionKey).
+   * @private
+   * @template T
+   * @param {Map<string, Promise<unknown>>} lockMap
+   * @param {string} key
+   * @param {() => Promise<T>} fn
+   * @returns {Promise<T>}
+   */
+  async _withLock(lockMap, key, fn) {
+    const prev = lockMap.get(key) || Promise.resolve();
+    let release;
+    const gate = new Promise((resolve) => {
+      release = resolve;
+    });
+    const chained = prev.catch(() => {}).then(() => gate);
+    lockMap.set(key, chained);
+
+    await prev.catch(() => {});
+    try {
+      return await fn();
+    } finally {
+      release();
+      if (lockMap.get(key) === chained) {
+        lockMap.delete(key);
+      }
+    }
+  }
+
+  /**
+   * Connects a session via ChannelAdapter after partner authorization,
+   * serialized per partner (for MAX_LINES_PER_PARTNER) and per sessionKey.
    * @param {string} partnerId
    * @param {string} [lineId='default']
    * @param {{ allowPaused?: boolean }} [options]
    */
   async connectSession(partnerId, lineId = 'default', options = {}) {
-    const entry = this.createOrGetSession(partnerId, lineId, options);
-    await this.channelAdapter.connect(entry.sessionKey);
+    const sessionKey = buildSessionKey(partnerId, lineId);
+    const entry = await this._withLock(this._partnerLocks, String(partnerId), async () =>
+      this.createOrGetSession(partnerId, lineId, options)
+    );
+    await this._withLock(this._sessionLocks, sessionKey, async () => {
+      const currentStatus = await this.channelAdapter.getStatus(entry.sessionKey);
+      if (currentStatus !== 'CONNECTED') {
+        await this.channelAdapter.connect(entry.sessionKey);
+      }
+    });
     return entry;
   }
 
   /**
    * Forces a clean pairing reset (wiping credentials and generating a fresh QR)
-   * for a partner session line.
+   * for a partner session line, serialized per sessionKey.
    * @param {string} partnerId
    * @param {string} [lineId='default']
    */
   async forceResetSession(partnerId, lineId = 'default') {
-    const entry = this.createOrGetSession(partnerId, lineId);
-    if (typeof this.channelAdapter.forceResetPairing === 'function') {
-      await this.channelAdapter.forceResetPairing(entry.sessionKey);
-    } else {
-      await this.disconnectSession(entry.sessionKey, { wipeAuth: true });
-      await this.channelAdapter.connect(entry.sessionKey);
-    }
+    const sessionKey = buildSessionKey(partnerId, lineId);
+    const entry = await this._withLock(this._partnerLocks, String(partnerId), async () =>
+      this.createOrGetSession(partnerId, lineId)
+    );
+    await this._withLock(this._sessionLocks, sessionKey, async () => {
+      if (typeof this.channelAdapter.forceResetPairing === 'function') {
+        await this.channelAdapter.forceResetPairing(entry.sessionKey);
+      } else {
+        await this.channelAdapter.disconnect(entry.sessionKey);
+        const root = path.resolve(this.sessionsDir);
+        const target = path.resolve(entry.authDir);
+        if (target.startsWith(root + path.sep)) {
+          fs.rmSync(target, { recursive: true, force: true });
+          fs.mkdirSync(target, { recursive: true });
+        }
+        await this.channelAdapter.connect(entry.sessionKey);
+      }
+    });
     return entry;
   }
 
   /**
-   * Disconnects a session and optionally wipes only its own authDir inside `sessionsDir`.
+   * Disconnects a session and optionally wipes only its own authDir inside `sessionsDir`,
+   * serialized per sessionKey.
    * @param {string} sessionKey
    * @param {{ wipeAuth?: boolean }} [options]
    */
   async disconnectSession(sessionKey, options = {}) {
     const { canonicalKey } = parseSessionKey(sessionKey);
-    await this.channelAdapter.disconnect(canonicalKey);
-    const entry = this._sessions.get(canonicalKey);
+    await this._withLock(this._sessionLocks, canonicalKey, async () => {
+      await this.channelAdapter.disconnect(canonicalKey);
+      const entry = this._sessions.get(canonicalKey);
 
-    if (options.wipeAuth && entry) {
-      const root = path.resolve(this.sessionsDir);
-      const target = path.resolve(entry.authDir);
-      if (target.startsWith(root + path.sep)) {
-        fs.rmSync(target, { recursive: true, force: true });
-        fs.mkdirSync(target, { recursive: true });
+      if (options.wipeAuth && entry) {
+        const root = path.resolve(this.sessionsDir);
+        const target = path.resolve(entry.authDir);
+        if (target.startsWith(root + path.sep)) {
+          fs.rmSync(target, { recursive: true, force: true });
+          fs.mkdirSync(target, { recursive: true });
+        }
       }
-    }
+    });
   }
 
   /**
@@ -418,129 +476,148 @@ class SessionManager {
       throw new Error('Inbound event requires partnerId and chatId');
     }
 
-    if (eventKey && this.queueRepository.isEventProcessed(eventKey)) {
+    if (eventKey && (this._inFlightEventKeys.has(eventKey) || this.queueRepository.isEventProcessed(eventKey))) {
       return { ok: true, duplicate: true };
     }
 
-    const customer = this.customerRepository.upsert({
-      partnerId,
-      channel,
-      externalId: chatId,
-      name: event.pushName || null,
-    });
-
-    const conversation = this.conversationRepository.upsertConversation({
-      partnerId,
-      customerId: customer.id,
-      channel,
-      externalChatId: chatId,
-    });
-
-    // Soft-Pause (Global via partners.is_active === 0 OR per-conversation):
-    // AI stays silent, WhatsApp socket stays live, messages recorded in SQLite JSON
-    const partner = this.partnerRepository.findById(partnerId);
-    const isGlobalPartnerPaused = Boolean(partner && Number(partner.is_active) === 0);
-    const isConversationPaused = this.pauseController.isPaused({
-      partnerId,
-      conversationId: conversation.id,
-    });
-
-    if (isGlobalPartnerPaused || isConversationPaused) {
-      const pauseText = event.sttFailed
-        ? '[áudio não transcrito]'
-        : String(event.text || '').trim();
-      if (pauseText) {
-        this.pauseController.recordPausedMessage({
-          partnerId,
-          conversationId: conversation.id,
-          role: 'customer',
-          text: pauseText,
-        });
-      }
-      if (eventKey) {
-        this.queueRepository.markEventProcessed(eventKey, sessionKey);
-      }
-      console.log(
-        `[SOFT_PAUSE] Suppressed AI reply partner=${partnerId} conv=${conversation.id} global=${isGlobalPartnerPaused} perConv=${isConversationPaused}`
-      );
-      return {
-        ok: true,
-        paused: true,
-        globalPaused: isGlobalPartnerPaused,
-        conversationId: conversation.id,
-      };
+    if (eventKey) {
+      this._inFlightEventKeys.add(eventKey);
     }
 
-    // Audio STT failed: never silent-drop — enqueue polite fallback response immediately
-    if (event.sttFailed) {
-      const fallbackText =
-        event.fallbackMessage || VoiceAdapter.FALLBACK_STT_MESSAGE;
-      const enqueued = this.queueRepository.enqueueWithIdempotency({
-        eventKey,
-        sessionKey,
+    let handedOffToDebouncer = false;
+    try {
+      const customer = this.customerRepository.upsert({
+        partnerId,
         channel,
-        recipientId: chatId,
-        payload: {
-          type: 'text',
-          text: fallbackText,
-          readReceiptKey: event.messageKey || null,
-          sttFallback: true,
-        },
+        externalId: chatId,
+        name: event.pushName || null,
       });
-      return {
-        ok: true,
-        sttFallback: true,
-        enqueued: enqueued.enqueued,
-        outbox: enqueued.outbox,
-      };
-    }
 
-    // Debounce fragmented messages by (partnerId, chatId)
-    const batchKey = MessageDebouncer.makeKey(partnerId, chatId);
-    return new Promise((resolve, reject) => {
-      let waiters = this._batchWaiters.get(batchKey);
-      if (!waiters) {
-        waiters = [];
-        this._batchWaiters.set(batchKey, waiters);
+      const conversation = this.conversationRepository.upsertConversation({
+        partnerId,
+        customerId: customer.id,
+        channel,
+        externalChatId: chatId,
+      });
+
+      // Soft-Pause (Global via partners.is_active === 0 OR per-conversation):
+      // AI stays silent, WhatsApp socket stays live, messages recorded in SQLite JSON
+      const partner = this.partnerRepository.findById(partnerId);
+      const isGlobalPartnerPaused = Boolean(partner && Number(partner.is_active) === 0);
+      const isConversationPaused = this.pauseController.isPaused({
+        partnerId,
+        conversationId: conversation.id,
+      });
+
+      if (isGlobalPartnerPaused || isConversationPaused) {
+        const pauseText = event.sttFailed
+          ? '[áudio não transcrito]'
+          : String(event.text || '').trim();
+        if (pauseText) {
+          this.pauseController.recordPausedMessage({
+            partnerId,
+            conversationId: conversation.id,
+            role: 'customer',
+            text: pauseText,
+          });
+        }
+        if (eventKey) {
+          this.queueRepository.markEventProcessed(eventKey, sessionKey);
+        }
+        console.log(
+          `[SOFT_PAUSE] Suppressed AI reply partner=${partnerId} conv=${conversation.id} global=${isGlobalPartnerPaused} perConv=${isConversationPaused}`
+        );
+        return {
+          ok: true,
+          paused: true,
+          globalPaused: isGlobalPartnerPaused,
+          conversationId: conversation.id,
+        };
       }
-      waiters.push({ resolve, reject });
 
-      const accepted = this.debouncer.enqueue(
-        {
-          partnerId,
-          chatId,
-          text: event.text,
+      // Audio STT failed: never silent-drop — enqueue polite fallback response immediately
+      if (event.sttFailed) {
+        const fallbackText =
+          event.fallbackMessage || VoiceAdapter.FALLBACK_STT_MESSAGE;
+        const enqueued = this.queueRepository.enqueueWithIdempotency({
           eventKey,
           sessionKey,
           channel,
-          customerId: customer.id,
-          customerPhone: customer.phone,
-          clientName: customer.name || event.pushName || 'Cliente',
-          conversationId: conversation.id,
-          messageKey: event.messageKey || null,
-        },
-        async (batch) => {
-          const batchWaiters = this._batchWaiters.get(batchKey) || [];
-          this._batchWaiters.delete(batchKey);
-          try {
-            const result = await this._processConsolidatedBatch(batch);
-            for (const w of batchWaiters) w.resolve(result);
-          } catch (err) {
-            for (const w of batchWaiters) w.reject(err);
-          }
-        }
-      );
-
-      if (!accepted.accepted) {
-        this._batchWaiters.delete(batchKey);
-        for (const w of waiters) w.resolve({ ok: false, reason: 'DEBOUNCER_CLOSED' });
+          recipientId: chatId,
+          payload: {
+            type: 'text',
+            text: fallbackText,
+            readReceiptKey: event.messageKey || null,
+            sttFallback: true,
+          },
+        });
+        return {
+          ok: true,
+          sttFallback: true,
+          enqueued: enqueued.enqueued,
+          outbox: enqueued.outbox,
+        };
       }
-    });
+
+      // Debounce fragmented messages by (partnerId, chatId)
+      const batchKey = MessageDebouncer.makeKey(partnerId, chatId);
+      handedOffToDebouncer = true;
+      return await new Promise((resolve, reject) => {
+        let waiters = this._batchWaiters.get(batchKey);
+        if (!waiters) {
+          waiters = [];
+          this._batchWaiters.set(batchKey, waiters);
+        }
+        waiters.push({ resolve, reject });
+
+        const accepted = this.debouncer.enqueue(
+          {
+            partnerId,
+            chatId,
+            text: event.text,
+            eventKey,
+            sessionKey,
+            channel,
+            customerId: customer.id,
+            customerPhone: customer.phone,
+            clientName: customer.name || event.pushName || 'Cliente',
+            conversationId: conversation.id,
+            messageKey: event.messageKey || null,
+          },
+          async (batch) => {
+            const batchWaiters = this._batchWaiters.get(batchKey) || [];
+            this._batchWaiters.delete(batchKey);
+            try {
+              const result = await this._processConsolidatedBatch(batch);
+              for (const w of batchWaiters) w.resolve(result);
+            } catch (err) {
+              for (const w of batchWaiters) w.reject(err);
+            } finally {
+              for (const ek of batch.eventKeys || []) {
+                this._inFlightEventKeys.delete(ek);
+              }
+            }
+          }
+        );
+
+        if (!accepted.accepted) {
+          if (eventKey) this._inFlightEventKeys.delete(eventKey);
+          this._batchWaiters.delete(batchKey);
+          for (const w of waiters) w.resolve({ ok: false, reason: 'DEBOUNCER_CLOSED' });
+        }
+      });
+    } finally {
+      if (!handedOffToDebouncer && eventKey) {
+        this._inFlightEventKeys.delete(eventKey);
+      }
+    }
   }
 
   /**
    * Executes AgentEngine on a consolidated debounced batch and performs
    * atomic post-commit persistence of `processed_events` + `outbox_queue`.
+   * Re-checks Soft-Pause right before AgentEngine AND right before enqueuing outbox
+   * to close TOCTOU windows when pause is toggled during debounce or LLM execution.
    * If AgentEngine throws, NO eventKeys are recorded in `processed_events`.
    * @private
    */
@@ -550,6 +627,44 @@ class SessionManager {
     }
 
     const first = batch.items[0] || {};
+    const sessionKey = first.sessionKey || `pme:${batch.partnerId}`;
+    const channel = first.channel || 'whatsapp';
+    const uniqueEventKeys = Array.from(new Set((batch.eventKeys || []).filter(Boolean)));
+
+    const checkPausedNow = () => {
+      const partner = this.partnerRepository.findById(batch.partnerId);
+      const globalPaused = Boolean(partner && Number(partner.is_active) === 0);
+      const convPaused = first.conversationId
+        ? this.pauseController.isPaused({
+            partnerId: batch.partnerId,
+            conversationId: first.conversationId,
+          })
+        : false;
+      return { paused: globalPaused || convPaused, globalPaused, convPaused };
+    };
+
+    const prePause = checkPausedNow();
+    if (prePause.paused) {
+      if (first.conversationId && batch.text) {
+        this.pauseController.recordPausedMessage({
+          partnerId: batch.partnerId,
+          conversationId: first.conversationId,
+          role: 'customer',
+          text: batch.text,
+        });
+      }
+      for (const ek of uniqueEventKeys) {
+        this.queueRepository.markEventProcessed(ek, sessionKey);
+      }
+      return {
+        ok: true,
+        paused: true,
+        globalPaused: prePause.globalPaused,
+        conversationId: first.conversationId,
+        consolidatedCount: batch.count,
+      };
+    }
+
     const pauseFact = this.pauseController.consumePausedContextFact({
       partnerId: batch.partnerId,
       conversationId: first.conversationId,
@@ -568,24 +683,40 @@ class SessionManager {
     });
 
     const replyText = String(turnResult?.text || '').trim();
-    const eventKeys = batch.eventKeys.length > 0 ? batch.eventKeys : [];
-    const sessionKey = first.sessionKey || `pme:${batch.partnerId}`;
-    const channel = first.channel || 'whatsapp';
 
-    // Post-commit atomic SQLite persistence: processed_events + outbox_queue
-    const outbox = this.dbManager.transaction(() => {
-      for (const ek of eventKeys) {
-        const inserted = this.queueRepository.markEventProcessed(ek, sessionKey);
-        if (!inserted && eventKeys.length === 1) {
-          return null;
+    // Post-commit atomic SQLite persistence: re-check pause + processed_events + outbox_queue
+    const commitRes = this.dbManager.transaction(() => {
+      const postPause = checkPausedNow();
+      if (postPause.paused) {
+        if (first.conversationId && batch.text) {
+          this.pauseController.recordPausedMessage({
+            partnerId: batch.partnerId,
+            conversationId: first.conversationId,
+            role: 'customer',
+            text: batch.text,
+          });
         }
+        for (const ek of uniqueEventKeys) {
+          this.queueRepository.markEventProcessed(ek, sessionKey);
+        }
+        return { paused: true, globalPaused: postPause.globalPaused, outbox: null };
+      }
+
+      let newlyMarked = 0;
+      for (const ek of uniqueEventKeys) {
+        if (this.queueRepository.markEventProcessed(ek, sessionKey)) {
+          newlyMarked += 1;
+        }
+      }
+      if (uniqueEventKeys.length > 0 && newlyMarked === 0) {
+        return { paused: false, duplicate: true, outbox: null };
       }
 
       if (!replyText) {
-        return null;
+        return { paused: false, outbox: null };
       }
 
-      return this.queueRepository.enqueueOutbox({
+      const outbox = this.queueRepository.enqueueOutbox({
         sessionKey,
         channel,
         recipientId: batch.chatId,
@@ -595,12 +726,24 @@ class SessionManager {
           readReceiptKey: first.messageKey || null,
         },
       });
+      return { paused: false, outbox };
     });
+
+    if (commitRes.paused) {
+      return {
+        ok: true,
+        paused: true,
+        globalPaused: commitRes.globalPaused,
+        conversationId: first.conversationId,
+        consolidatedCount: batch.count,
+      };
+    }
 
     return {
       ok: true,
+      duplicate: Boolean(commitRes.duplicate),
       turnResult,
-      outbox,
+      outbox: commitRes.outbox,
       consolidatedCount: batch.count,
     };
   }
@@ -749,6 +892,10 @@ class SessionManager {
       }
     }
     this._sessions.clear();
+    this._batchWaiters.clear();
+    this._inFlightEventKeys.clear();
+    this._partnerLocks.clear();
+    this._sessionLocks.clear();
   }
 }
 

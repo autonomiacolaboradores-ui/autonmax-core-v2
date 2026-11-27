@@ -333,6 +333,50 @@ class CatalogRepository {
   }
 
   /**
+   * Atomically decrements stock_quantity for a stock-tracked active catalog item.
+   * Must be called inside a BEGIN IMMEDIATE transaction (or runs in its own).
+   * Returns `{ ok: boolean, remaining: number | null, available: number | null }`.
+   * @param {string} id
+   * @param {string} partnerId
+   * @param {number} qty
+   */
+  decrementStockAtomic(id, partnerId, qty) {
+    const amount = Number(qty);
+    if (!Number.isInteger(amount) || amount <= 0) {
+      throw new Error(`decrementStockAtomic requires positive integer qty, got: ${qty}`);
+    }
+    return DatabaseManager.runInTransaction(this.dbOrManager, (db) => {
+      const info = db
+        .prepare(
+          `UPDATE catalog_items
+           SET stock_quantity = stock_quantity - ?, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ? AND partner_id = ? AND active = 1
+             AND track_stock = 1 AND stock_quantity >= ?`
+        )
+        .run(amount, id, partnerId, amount);
+
+      const current = DatabaseManager.toPlain(
+        db
+          .prepare('SELECT stock_quantity, track_stock, active FROM catalog_items WHERE id = ? AND partner_id = ?')
+          .get(id, partnerId)
+      );
+
+      if (info.changes > 0) {
+        return {
+          ok: true,
+          remaining: current ? Number(current.stock_quantity) : null,
+          available: current ? Number(current.stock_quantity) : null,
+        };
+      }
+      return {
+        ok: false,
+        remaining: current && current.stock_quantity !== null ? Number(current.stock_quantity) : null,
+        available: current && current.stock_quantity !== null ? Number(current.stock_quantity) : 0,
+      };
+    });
+  }
+
+  /**
    * Re-activates a soft-deleted catalog item.
    * @param {string} id
    * @param {string | { partnerId?: string }} [options]

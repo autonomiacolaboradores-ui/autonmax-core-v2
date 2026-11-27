@@ -456,6 +456,19 @@ class BookingService {
         };
       } catch (err) {
         if (err && err.code === 'ERR_SQLITE_ERROR' && /UNIQUE constraint failed/i.test(err.message)) {
+          if (idempotencyKey) {
+            const existingByKey = this.appointmentRepository.findByIdempotencyKey(
+              idempotencyKey,
+              { partnerId }
+            );
+            if (existingByKey) {
+              return {
+                ok: true,
+                idempotent: true,
+                appointment: existingByKey,
+              };
+            }
+          }
           throw new DomainError(
             'SLOT_TAKEN',
             `O horário ${timeSlot} em ${formatFriendly(dateStr)} não está mais disponível.`,

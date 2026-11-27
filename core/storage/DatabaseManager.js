@@ -151,36 +151,51 @@ class DatabaseManager {
     const db = this.getDb();
     const isOuter = this._txDepth === 0;
     const savepointName = `sp_tx_${this._txDepth}`;
+    const maxBusyRetries = isOuter ? 3 : 0;
 
-    if (isOuter) {
-      db.exec('BEGIN IMMEDIATE;');
-    } else {
-      db.exec(`SAVEPOINT ${savepointName};`);
-    }
-
-    this._txDepth += 1;
-    try {
-      const result = fn(db);
+    for (let attempt = 0; ; attempt += 1) {
       if (isOuter) {
-        db.exec('COMMIT;');
+        try {
+          db.exec('BEGIN IMMEDIATE;');
+        } catch (beginErr) {
+          const isBusy = /SQLITE_BUSY|database is locked/i.test(String(beginErr?.message || ''));
+          if (isBusy && attempt < maxBusyRetries) {
+            continue;
+          }
+          throw beginErr;
+        }
       } else {
-        db.exec(`RELEASE SAVEPOINT ${savepointName};`);
+        db.exec(`SAVEPOINT ${savepointName};`);
       }
-      return result;
-    } catch (err) {
+
+      this._txDepth += 1;
       try {
+        const result = fn(db);
         if (isOuter) {
-          db.exec('ROLLBACK;');
+          db.exec('COMMIT;');
         } else {
-          db.exec(`ROLLBACK TO SAVEPOINT ${savepointName};`);
           db.exec(`RELEASE SAVEPOINT ${savepointName};`);
         }
-      } catch {
-        // Ignore rollback failure if SQLite already rolled back.
+        return result;
+      } catch (err) {
+        try {
+          if (isOuter) {
+            db.exec('ROLLBACK;');
+          } else {
+            db.exec(`ROLLBACK TO SAVEPOINT ${savepointName};`);
+            db.exec(`RELEASE SAVEPOINT ${savepointName};`);
+          }
+        } catch {
+          // Ignore rollback failure if SQLite already rolled back.
+        }
+        const isBusy = /SQLITE_BUSY|database is locked/i.test(String(err?.message || ''));
+        if (isOuter && isBusy && attempt < maxBusyRetries) {
+          continue;
+        }
+        throw err;
+      } finally {
+        this._txDepth -= 1;
       }
-      throw err;
-    } finally {
-      this._txDepth -= 1;
     }
   }
 

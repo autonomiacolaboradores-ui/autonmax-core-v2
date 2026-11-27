@@ -16,11 +16,13 @@ class AuthScreen {
 
   /**
    * Renders the full-screen authentication overlay.
-   * @param {{ mode?: 'login' | 'register', error?: string, message?: string }} [state]
+   * @param {{ mode?: 'login' | 'register', error?: string, message?: string, apiBaseUrl?: string, showServerConfig?: boolean }} [state]
    * @returns {string}
    */
   render(state = {}) {
     const isRegister = state.mode === 'register';
+    const apiBaseUrl = String(state.apiBaseUrl || '').replace(/"/g, '&quot;');
+    const openServerAttr = state.showServerConfig ? ' open' : '';
     const errorHtml = state.error
       ? `<p class="auth-feedback error" data-auth-error="true">${state.error}</p>`
       : '';
@@ -40,6 +42,10 @@ class AuthScreen {
         : '',
       `      <input name="email" type="email" class="dark-input" placeholder="E-mail" required autocomplete="email" />`,
       `      <input name="password" type="password" class="dark-input" placeholder="Senha" required autocomplete="${isRegister ? 'new-password' : 'current-password'}" />`,
+      `      <details class="auth-server-details"${openServerAttr}>`,
+      `        <summary class="auth-server-summary">Servidor da API</summary>`,
+      `        <input name="apiBaseUrl" type="url" class="dark-input" placeholder="https://seu-servidor.onrender.com" value="${apiBaseUrl}" autocomplete="url" data-auth-api-url="true" />`,
+      `      </details>`,
       `      <div class="welcome-actions">`,
       `        <button type="submit" class="exec-action-btn primary glow-neon" style="flex: 1;" data-auth-submit="true">${icon('sparkles', { size: 16 })} <span>${isRegister ? 'Criar Conta' : 'Entrar'}</span></button>`,
       `        <button type="button" class="exec-action-btn" style="flex: 1;" data-auth-action="switch-auth">${isRegister ? 'Já tenho conta' : 'Criar Conta'}</button>`,

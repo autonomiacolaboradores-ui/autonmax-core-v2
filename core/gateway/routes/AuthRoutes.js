@@ -80,17 +80,33 @@ function createAuthRoutes(deps) {
           );
         }
 
-        const partner = partnerRepository.create({
-          id: body.id,
-          email,
-          passwordHash: hashPassword(password),
-          displayName,
-          storeSegment: body.storeSegment ?? body.store_segment ?? null,
-          personalityPrompt:
-            body.personalityPrompt ??
-            body.personality_prompt ??
-            DEFAULT_AGNOSTIC_SALES_PROMPT,
-        });
+        let partner;
+        try {
+          partner = partnerRepository.create({
+            id: body.id,
+            email,
+            passwordHash: hashPassword(password),
+            displayName,
+            storeSegment: body.storeSegment ?? body.store_segment ?? null,
+            personalityPrompt:
+              body.personalityPrompt ??
+              body.personality_prompt ??
+              DEFAULT_AGNOSTIC_SALES_PROMPT,
+          });
+        } catch (err) {
+          if (
+            err &&
+            (err.code === 'ERR_SQLITE_ERROR' || /UNIQUE constraint failed/i.test(String(err.message || ''))) &&
+            /UNIQUE constraint failed/i.test(String(err.message || ''))
+          ) {
+            return sendError(
+              409,
+              'EMAIL_ALREADY_EXISTS',
+              'Este e-mail já está cadastrado.'
+            );
+          }
+          throw err;
+        }
 
         const { token, expiresAtMs } = authMiddleware.signJwt({
           partnerId: partner.id,

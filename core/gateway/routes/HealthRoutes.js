@@ -96,7 +96,10 @@ function createHealthRoutes(deps) {
         const userMessage = String(
           body?.message || 'Responda em português em 1 frase curta confirmando que está online.'
         ).trim();
-        const partnerId = body?.partnerId || auth?.partnerId || null;
+        const partnerId =
+          auth?.type === 'bearer'
+            ? auth.partnerId
+            : body?.partnerId || auth?.partnerId || null;
 
         if (body?.mode === 'agent' && deps.agentEngine && partnerId) {
           const ctx = deps.agentEngine.buildContext({

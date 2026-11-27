@@ -55,6 +55,9 @@ class OutboundQueueWorker {
     this.retryBaseMs = Number.isFinite(deps.retryBaseMs)
       ? Number(deps.retryBaseMs)
       : 2000;
+    this.maxConcurrentSessions = Number.isInteger(deps.maxConcurrentSessions) && deps.maxConcurrentSessions > 0
+      ? deps.maxConcurrentSessions
+      : 10;
     this.sleepFn = deps.sleepFn || null;
 
     this._running = false;
@@ -141,79 +144,114 @@ class OutboundQueueWorker {
     }
 
     this._inFlight = (async () => {
-      const due = this.queueRepository.fetchDueOutbox({
-        nowMs: options.nowMs ?? Date.now(),
-        limit: options.limit ?? 20,
-        sessionKey: options.sessionKey,
-      });
+      const due =
+        typeof this.queueRepository.claimDueOutbox === 'function'
+          ? this.queueRepository.claimDueOutbox({
+              nowMs: options.nowMs ?? Date.now(),
+              limit: options.limit ?? 50,
+              sessionKey: options.sessionKey,
+            })
+          : this.queueRepository.fetchDueOutbox({
+              nowMs: options.nowMs ?? Date.now(),
+              limit: options.limit ?? 50,
+              sessionKey: options.sessionKey,
+            });
+
+      // Group by session_key so FIFO order is strictly preserved per tenant/session
+      // while different tenants dispatch concurrently without Head-of-Line blocking.
+      /** @type {Map<string, Array<Record<string, any>>>} */
+      const bySession = new Map();
+      for (const row of due) {
+        const key = String(row.session_key || 'default');
+        let bucket = bySession.get(key);
+        if (!bucket) {
+          bucket = [];
+          bySession.set(key, bucket);
+        }
+        bucket.push(row);
+      }
 
       let sent = 0;
       let retried = 0;
       let failed = 0;
 
-      for (const row of due) {
-        const payload = row.payload || {};
-        const presenceMode =
-          payload.presence ||
-          (payload.type === 'audio' ? 'recording' : 'composing');
+      const processSessionRows = async (rows) => {
+        for (const row of rows) {
+          const payload = row.payload || {};
+          const presenceMode =
+            payload.presence ||
+            (payload.type === 'audio' ? 'recording' : 'composing');
 
-        try {
-          if (
-            payload.readReceiptKey &&
-            typeof this.channelAdapter.markRead === 'function'
-          ) {
-            await this.channelAdapter.markRead(row.session_key, [
-              payload.readReceiptKey,
-            ]);
-          }
-
-          if (typeof this.channelAdapter.sendPresence === 'function') {
-            await this.channelAdapter.sendPresence(
-              row.session_key,
-              row.recipient_id,
-              presenceMode
-            );
-          }
-
-          const delayMs = this.computePresenceDelayMs(payload.text);
-          if (delayMs > 0) {
-            await this._sleep(delayMs);
-          }
-
-          if (typeof this.channelAdapter.sendPresence === 'function') {
-            await this.channelAdapter.sendPresence(
-              row.session_key,
-              row.recipient_id,
-              'paused'
-            );
-          }
-
-          await this.channelAdapter.sendMessage(
-            row.session_key,
-            row.recipient_id,
-            {
-              type: payload.type || 'text',
-              text: payload.text,
-              mediaUrl: payload.mediaUrl,
+          try {
+            if (
+              payload.readReceiptKey &&
+              typeof this.channelAdapter.markRead === 'function'
+            ) {
+              await this.channelAdapter.markRead(row.session_key, [
+                payload.readReceiptKey,
+              ]);
             }
-          );
 
-          this.queueRepository.markOutboxSent(row.id);
-          sent += 1;
-        } catch {
-          const nextAttemptCount = Number(row.attempts || 0) + 1;
-          if (nextAttemptCount >= this.maxAttempts) {
-            this.queueRepository.markOutboxFailed(row.id);
-            failed += 1;
-          } else {
-            const backoff = this.retryBaseMs * Math.pow(2, nextAttemptCount - 1);
-            this.queueRepository.markOutboxRetry(row.id, {
-              nextAttemptAt: Date.now() + backoff,
-            });
-            retried += 1;
+            if (typeof this.channelAdapter.sendPresence === 'function') {
+              await this.channelAdapter.sendPresence(
+                row.session_key,
+                row.recipient_id,
+                presenceMode
+              );
+            }
+
+            const delayMs = this.computePresenceDelayMs(payload.text);
+            if (delayMs > 0) {
+              await this._sleep(delayMs);
+            }
+
+            if (typeof this.channelAdapter.sendPresence === 'function') {
+              await this.channelAdapter.sendPresence(
+                row.session_key,
+                row.recipient_id,
+                'paused'
+              );
+            }
+
+            await this.channelAdapter.sendMessage(
+              row.session_key,
+              row.recipient_id,
+              {
+                type: payload.type || 'text',
+                text: payload.text,
+                mediaUrl: payload.mediaUrl,
+              }
+            );
+
+            this.queueRepository.markOutboxSent(row.id);
+            sent += 1;
+          } catch {
+            const nextAttemptCount = Number(row.attempts || 0) + 1;
+            if (nextAttemptCount >= this.maxAttempts) {
+              this.queueRepository.markOutboxFailed(row.id);
+              failed += 1;
+            } else {
+              const backoff = this.retryBaseMs * Math.pow(2, nextAttemptCount - 1);
+              this.queueRepository.markOutboxRetry(row.id, {
+                nextAttemptAt: Date.now() + backoff,
+              });
+              retried += 1;
+            }
           }
         }
-      }
+      };
+
+      const sessionQueues = Array.from(bySession.values());
+      const concurrency = Math.min(this.maxConcurrentSessions, Math.max(1, sessionQueues.length));
+      let cursor = 0;
+      const runners = Array.from({ length: concurrency }, async () => {
+        while (cursor < sessionQueues.length) {
+          const idx = cursor;
+          cursor += 1;
+          await processSessionRows(sessionQueues[idx]);
+        }
+      });
+      await Promise.all(runners);
 
       return {
         processed: due.length,

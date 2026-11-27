@@ -172,13 +172,18 @@ class ConversationRepository {
   }
 
   /**
-   * Appends a human/customer interaction snippet into `paused_context_json`.
+   * Appends a human/customer interaction snippet into `paused_context_json`
+   * atomically inside `BEGIN IMMEDIATE` without modifying `is_paused`.
    * @param {string} id
    * @param {unknown} entry
-   * @param {string | { partnerId?: string }} [options]
+   * @param {string | { partnerId?: string, maxEntries?: number }} [options]
    */
   appendPausedContext(id, entry, options = {}) {
     const partnerId = DatabaseManager.extractPartnerId(options);
+    const maxEntries =
+      typeof options === 'object' && options !== null && Number.isInteger(options.maxEntries) && options.maxEntries > 0
+        ? options.maxEntries
+        : 40;
     return DatabaseManager.runInTransaction(this.dbOrManager, (db) => {
       const conv = hydrateConversation(
         partnerId
@@ -189,7 +194,7 @@ class ConversationRepository {
       );
       if (!conv) return null;
 
-      const updated = [...conv.paused_context, entry];
+      const updated = [...conv.paused_context, entry].slice(-maxEntries);
       if (partnerId) {
         db.prepare(
           'UPDATE conversations SET paused_context_json = ? WHERE id = ? AND partner_id = ?'
@@ -207,6 +212,41 @@ class ConversationRepository {
               .get(id, partnerId)
           : db.prepare('SELECT * FROM conversations WHERE id = ?').get(id)
       );
+    });
+  }
+
+  /**
+   * Atomically reads `paused_context_json` and optionally clears it inside `BEGIN IMMEDIATE`
+   * without touching `is_paused` or losing concurrently appended messages.
+   * @param {string} id
+   * @param {{ partnerId?: string, clear?: boolean }} [options]
+   * @returns {Array<Record<string, any>>}
+   */
+  consumePausedContext(id, options = {}) {
+    const partnerId = DatabaseManager.extractPartnerId(options);
+    const clear = Boolean(options.clear);
+    return DatabaseManager.runInTransaction(this.dbOrManager, (db) => {
+      const conv = hydrateConversation(
+        partnerId
+          ? db
+              .prepare('SELECT * FROM conversations WHERE id = ? AND partner_id = ?')
+              .get(id, partnerId)
+          : db.prepare('SELECT * FROM conversations WHERE id = ?').get(id)
+      );
+      if (!conv || !Array.isArray(conv.paused_context) || conv.paused_context.length === 0) {
+        return [];
+      }
+      const snapshot = [...conv.paused_context];
+      if (clear) {
+        if (partnerId) {
+          db.prepare(
+            "UPDATE conversations SET paused_context_json = '[]' WHERE id = ? AND partner_id = ?"
+          ).run(id, partnerId);
+        } else {
+          db.prepare("UPDATE conversations SET paused_context_json = '[]' WHERE id = ?").run(id);
+        }
+      }
+      return snapshot;
     });
   }
 

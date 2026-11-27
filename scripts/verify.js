@@ -125,9 +125,11 @@ function runContractTestSuite() {
     'tests/layer4_messaging.test.js',
     'tests/layer5_gateway.test.js',
     'tests/layer6_offline_deploy.test.js',
+    'tests/layer7_multitenant_stress.test.js',
+    'tests/layer8_security_race_toctou.test.js',
   ];
 
-  console.log('[verify 4/4] Running Layers 1..6 contract test suite...');
+  console.log('[verify 4/4] Running Layers 1..8 contract, stress & TOCTOU security test suite...');
   const result = spawnSync(process.execPath, ['--test', ...testFiles], {
     cwd: VNEXT_ROOT,
     stdio: 'inherit',

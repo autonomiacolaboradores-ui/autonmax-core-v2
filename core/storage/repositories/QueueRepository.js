@@ -195,6 +195,57 @@ class QueueRepository {
   }
 
   /**
+   * Atomically claims due PENDING items from `outbox_queue` by advancing their
+   * `next_attempt_at` lease window inside a single `BEGIN IMMEDIATE` transaction
+   * (preserving the `CHECK(status IN ('PENDING', 'SENT', 'FAILED'))` constraint),
+   * preventing double-send across concurrent `processOnce()` calls or multiple workers.
+   * @param {{ nowMs?: number, limit?: number, sessionKey?: string, leaseMs?: number }} [options]
+   */
+  claimDueOutbox(options = {}) {
+    const nowMs = Math.trunc(Number(options.nowMs ?? Date.now()));
+    const limit = Number.isInteger(options.limit) ? options.limit : 20;
+    const leaseMs =
+      Number.isFinite(options.leaseMs) && Number(options.leaseMs) > 0
+        ? Math.trunc(Number(options.leaseMs))
+        : 60_000;
+    const leaseUntil = nowMs + leaseMs;
+
+    return DatabaseManager.runInTransaction(this.dbOrManager, (db) => {
+      const rows = options.sessionKey
+        ? db
+            .prepare(
+              `SELECT * FROM outbox_queue
+               WHERE status = 'PENDING' AND next_attempt_at <= ? AND session_key = ?
+               ORDER BY next_attempt_at ASC, created_at ASC, rowid ASC
+               LIMIT ?`
+            )
+            .all(nowMs, String(options.sessionKey), limit)
+        : db
+            .prepare(
+              `SELECT * FROM outbox_queue
+               WHERE status = 'PENDING' AND next_attempt_at <= ?
+               ORDER BY next_attempt_at ASC, created_at ASC, rowid ASC
+               LIMIT ?`
+            )
+            .all(nowMs, limit);
+
+      if (rows.length === 0) return [];
+
+      const updateStmt = db.prepare(
+        "UPDATE outbox_queue SET next_attempt_at = ? WHERE id = ? AND status = 'PENDING' AND next_attempt_at <= ?"
+      );
+      const claimed = [];
+      for (const row of rows) {
+        const info = updateStmt.run(leaseUntil, row.id, nowMs);
+        if (info.changes > 0) {
+          claimed.push(hydrateOutbox({ ...row, next_attempt_at: leaseUntil }));
+        }
+      }
+      return claimed;
+    });
+  }
+
+  /**
    * Counts pending items in `outbox_queue`.
    * @returns {number}
    */
@@ -217,7 +268,7 @@ class QueueRepository {
   }
 
   /**
-   * Increments retry attempts and schedules next attempt timestamp.
+   * Increments retry attempts, resets status to PENDING, and schedules next attempt timestamp.
    * @param {string} id
    * @param {{ nextAttemptAt: number }} options
    */
@@ -226,7 +277,8 @@ class QueueRepository {
     this._db()
       .prepare(
         `UPDATE outbox_queue
-         SET attempts = COALESCE(attempts, 0) + 1,
+         SET status = 'PENDING',
+             attempts = COALESCE(attempts, 0) + 1,
              next_attempt_at = ?
          WHERE id = ?`
       )

@@ -47,13 +47,7 @@ function createChannelRoutes(deps) {
         }
 
         const adapter = sessionManager.channelAdapter;
-        const candidateKey =
-          lineId === 'default' ? `pme:${partnerId}` : `pme:${partnerId}:${lineId}`;
-        const currentStatus = await adapter.getStatus(candidateKey);
-        const entry =
-          currentStatus === 'CONNECTED'
-            ? sessionManager.createOrGetSession(partnerId, lineId)
-            : await sessionManager.connectSession(partnerId, lineId);
+        const entry = await sessionManager.connectSession(partnerId, lineId);
 
         const status = await adapter.getStatus(entry.sessionKey);
         const qr = await adapter.getQr(entry.sessionKey);

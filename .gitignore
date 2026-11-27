@@ -18,8 +18,10 @@ android/.gradle/
 android/build/
 android/app/build/
 
-# Android signing secrets
+# Android signing & local build state
+android/local.properties
 android/keystore.properties
+android/app/src/main/assets/public/
 *.jks
 *.keystore
 

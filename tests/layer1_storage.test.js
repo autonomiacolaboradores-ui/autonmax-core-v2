@@ -56,13 +56,13 @@ describe('Layer 1 — Foundation, SQLite Storage & LifecycleManager', () => {
     // 1a. :memory:
     const memDb = new DatabaseManager({ dbPath: ':memory:' });
     const firstMem = memDb.init();
-    assert.deepEqual(firstMem.applied, [1, 2, 3]);
-    assert.equal(firstMem.currentVersion, 3);
+    assert.deepEqual(firstMem.applied, [1, 2, 3, 4]);
+    assert.equal(firstMem.currentVersion, 4);
 
     const secondMem = memDb.migrate();
     assert.deepEqual(secondMem.applied, []);
-    assert.deepEqual(secondMem.skipped, [1, 2, 3]);
-    assert.equal(secondMem.currentVersion, 3);
+    assert.deepEqual(secondMem.skipped, [1, 2, 3, 4]);
+    assert.equal(secondMem.currentVersion, 4);
 
     const partnerCols = memDb
       .getDb()
@@ -89,7 +89,7 @@ describe('Layer 1 — Foundation, SQLite Storage & LifecycleManager', () => {
 
     try {
       const migrationRes = fileDb.init();
-      assert.deepEqual(migrationRes.applied, [1, 2, 3]);
+      assert.deepEqual(migrationRes.applied, [1, 2, 3, 4]);
       assert.ok(fs.existsSync(dbPath), 'SQLite database file should be created');
 
       const pragmas = fileDb.getPragmas();
@@ -99,10 +99,11 @@ describe('Layer 1 — Foundation, SQLite Storage & LifecycleManager', () => {
       assert.equal(pragmas.busy_timeout, 5000);
 
       const applied = fileDb.getAppliedMigrations();
-      assert.equal(applied.length, 3);
+      assert.equal(applied.length, 4);
       assert.equal(applied[0].version, 1);
       assert.equal(applied[1].version, 2);
       assert.equal(applied[2].version, 3);
+      assert.equal(applied[3].version, 4);
 
       const idxRow = fileDb
         .getDb()
@@ -112,6 +113,14 @@ describe('Layer 1 — Foundation, SQLite Storage & LifecycleManager', () => {
         .get();
       assert.ok(idxRow, 'idx_appointments_unique_slot index must exist');
 
+      const perfIdxRow = fileDb
+        .getDb()
+        .prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_catalog_partner_active_type'"
+        )
+        .get();
+      assert.ok(perfIdxRow, 'Migration 004 composite index idx_catalog_partner_active_type must exist');
+
       fileDb.close();
       assert.equal(fileDb.isOpen(), false);
 
@@ -120,7 +129,7 @@ describe('Layer 1 — Foundation, SQLite Storage & LifecycleManager', () => {
       try {
         const rerun = reopened.init();
         assert.deepEqual(rerun.applied, []);
-        assert.deepEqual(rerun.skipped, [1, 2, 3]);
+        assert.deepEqual(rerun.skipped, [1, 2, 3, 4]);
       } finally {
         reopened.close();
       }

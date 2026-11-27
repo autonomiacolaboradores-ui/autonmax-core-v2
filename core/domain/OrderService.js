@@ -100,6 +100,8 @@ class OrderService {
 
       const resolvedSnapshots = [];
       let authoritativeTotalCents = 0;
+      /** @type {Map<string, { item: Record<string, any>, qty: number }>} */
+      const stockRequirements = new Map();
 
       for (const entry of items) {
         if (!entry || typeof entry !== 'object') {
@@ -168,6 +170,14 @@ class OrderService {
           );
         }
 
+        if (Number(catalogItem.track_stock ?? 0) === 1) {
+          const prev = stockRequirements.get(catalogItem.id);
+          stockRequirements.set(catalogItem.id, {
+            item: catalogItem,
+            qty: (prev ? prev.qty : 0) + qty,
+          });
+        }
+
         // Authoritative SQLite price only — external price/total fields are ignored.
         const unitCents = Number(catalogItem.price_cents);
         const subtotalCents = unitCents * qty;
@@ -183,26 +193,70 @@ class OrderService {
         });
       }
 
-      const order = this.orderRepository.create({
-        partnerId,
-        customerId,
-        clientName,
-        customerPhone,
-        items: resolvedSnapshots,
-        totalCents: authoritativeTotalCents,
-        paymentMethod,
-        deliveryType,
-        address,
-        notes,
-        status: 'CONFIRMED',
-        idempotencyKey,
-      });
+      // Atomic stock depletion check & decrement inside the same BEGIN IMMEDIATE transaction
+      for (const [trackedItemId, req] of stockRequirements.entries()) {
+        const dec = this.catalogRepository.decrementStockAtomic(
+          trackedItemId,
+          partnerId,
+          req.qty
+        );
+        if (!dec.ok) {
+          throw new DomainError(
+            'INSUFFICIENT_STOCK',
+            `Estoque insuficiente para "${req.item.name}". Disponível: ${dec.available ?? 0}, solicitado: ${req.qty}.`,
+            {
+              partnerId,
+              itemId: trackedItemId,
+              requested: req.qty,
+              available: dec.available ?? 0,
+            },
+            409
+          );
+        }
+      }
 
-      return {
-        ok: true,
-        idempotent: false,
-        order,
-      };
+      try {
+        const order = this.orderRepository.create({
+          partnerId,
+          customerId,
+          clientName,
+          customerPhone,
+          items: resolvedSnapshots,
+          totalCents: authoritativeTotalCents,
+          paymentMethod,
+          deliveryType,
+          address,
+          notes,
+          status: 'CONFIRMED',
+          idempotencyKey,
+        });
+
+        return {
+          ok: true,
+          idempotent: false,
+          order,
+        };
+      } catch (err) {
+        if (
+          idempotencyKey &&
+          err &&
+          err.code === 'ERR_SQLITE_ERROR' &&
+          /UNIQUE constraint failed/i.test(err.message)
+        ) {
+          const existing = this.orderRepository.findByIdempotencyKey(
+            idempotencyKey,
+            { partnerId }
+          );
+          if (existing) {
+            return {
+              ok: true,
+              idempotent: true,
+              order: existing,
+            };
+          }
+        }
+        throw err;
+      }
     });
   }
 

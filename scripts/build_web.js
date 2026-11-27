@@ -61,13 +61,22 @@ function collectJsModules(dir) {
 /**
  * Generates a zero-dependency browser CommonJS bundle (`app.bundle.js`)
  * from `app-web/src/**\/*.js` so the SPA runs directly in browsers without Node `require`.
+ * Injects optional build-time `VITE_API_BASE_URL` / `API_BASE_URL` for Capacitor/APK builds.
  * @param {string} appWebDir
  * @param {string} distDir
+ * @param {{ apiBaseUrl?: string }} [options]
  */
-function writeBrowserBundle(appWebDir, distDir) {
+function writeBrowserBundle(appWebDir, distDir, options = {}) {
   const srcRoot = path.join(appWebDir, 'src');
   const jsFiles = collectJsModules(srcRoot);
   if (jsFiles.length === 0) return null;
+
+  const rawApiBaseUrl =
+    options.apiBaseUrl ??
+    process.env.VITE_API_BASE_URL ??
+    process.env.API_BASE_URL ??
+    '';
+  const normalizedApiBaseUrl = String(rawApiBaseUrl || '').trim().replace(/\/+$/, '');
 
   const moduleEntries = jsFiles.map((filePath) => {
     const relId = './' + path.relative(appWebDir, filePath).replace(/\\/g, '/');
@@ -81,6 +90,10 @@ function writeBrowserBundle(appWebDir, distDir) {
 
   const bundleContent = `(function(globalScope) {
   'use strict';
+
+  globalScope.__AUTONMAX_BUILD_CONFIG__ = Object.freeze({
+    apiBaseUrl: ${JSON.stringify(normalizedApiBaseUrl)}
+  });
 
   function fallbackUuid() {
     if (globalScope.crypto && typeof globalScope.crypto.randomUUID === 'function') {
@@ -168,7 +181,7 @@ function buildWeb(options = {}) {
 
   fs.rmSync(distDir, { recursive: true, force: true });
   let filesCopied = copyRecursive(appWebDir, distDir, distDir);
-  if (writeBrowserBundle(appWebDir, distDir)) {
+  if (writeBrowserBundle(appWebDir, distDir, { apiBaseUrl: options.apiBaseUrl })) {
     filesCopied += 1;
   }
 

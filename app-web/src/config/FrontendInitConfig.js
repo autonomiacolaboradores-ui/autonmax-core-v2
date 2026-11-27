@@ -81,7 +81,7 @@ function mountAutonmaxUI(container, config = {}) {
     storage: ports.storage,
     network: ports.network,
     secureAuth: ports.secureAuth,
-    baseUrl: config.baseUrl || '',
+    baseUrl: config.apiBaseUrl ?? config.baseUrl ?? '',
     fetchImpl: config.fetchImpl,
     onStatusChange: (status) => {
       badge.update({ status });
@@ -174,6 +174,9 @@ function mountAutonmaxUI(container, config = {}) {
     setUiMode(nextMode) {
       uiMode = nextMode === 'advanced' ? 'advanced' : 'guided';
       return render();
+    },
+    setBaseUrl(nextBaseUrl) {
+      syncQueue.baseUrl = String(nextBaseUrl || '').trim().replace(/\/+$/, '');
     },
     navigate(viewId) {
       if (views[viewId]) {

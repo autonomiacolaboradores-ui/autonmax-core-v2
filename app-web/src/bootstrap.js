@@ -33,6 +33,48 @@ function parsePriceBrlToCents(raw) {
   return Number.isFinite(num) && num >= 0 ? Math.round(num * 100) : NaN;
 }
 
+const API_BASE_URL_STORAGE_KEY = 'autonmax_api_base_url';
+
+function normalizeApiBaseUrl(raw) {
+  const trimmed = String(raw || '').trim().replace(/\/+$/, '');
+  if (!trimmed) return '';
+  if (!/^https?:\/\//i.test(trimmed)) {
+    return `https://${trimmed}`;
+  }
+  return trimmed;
+}
+
+function isCapacitorOrLocalWebView() {
+  if (typeof window === 'undefined') return false;
+  if (window.Capacitor && typeof window.Capacitor.isNativePlatform === 'function' && window.Capacitor.isNativePlatform()) {
+    return true;
+  }
+  const proto = String(window.location?.protocol || '');
+  const host = String(window.location?.hostname || '');
+  const port = String(window.location?.port || '');
+  return (
+    proto === 'capacitor:' ||
+    proto === 'file:' ||
+    (proto === 'https:' && host === 'localhost' && !port)
+  );
+}
+
+function resolveInitialApiBaseUrl() {
+  try {
+    const saved = window.localStorage?.getItem(API_BASE_URL_STORAGE_KEY);
+    if (saved && saved.trim()) {
+      return normalizeApiBaseUrl(saved);
+    }
+  } catch {
+    // Ignore storage read errors
+  }
+  const buildUrl = window.__AUTONMAX_BUILD_CONFIG__?.apiBaseUrl;
+  if (buildUrl && String(buildUrl).trim()) {
+    return normalizeApiBaseUrl(buildUrl);
+  }
+  return '';
+}
+
 /**
  * Browser entrypoint that mounts the full-screen AuthScreen until authenticated,
  * mounts AUTON.MAX into `#autonmax-root`, and wires all operational views to `/api/v1/*`.
@@ -48,9 +90,14 @@ function initBrowserApp() {
   const authScreen = new AuthScreen();
   const waModal = new WhatsAppQrModal();
 
+  const nativeShell = isCapacitorOrLocalWebView();
+  const initialApiBaseUrl = resolveInitialApiBaseUrl();
+
   const state = {
     token: null,
     partner: null,
+    apiBaseUrl: initialApiBaseUrl,
+    isNativeShell: nativeShell,
     authMode: 'login',
     authMessage: '',
     authError: '',
@@ -104,9 +151,34 @@ function initBrowserApp() {
     }, 1500);
   }
 
+  function buildApiUrl(path) {
+    const p = String(path || '');
+    if (/^https?:\/\//i.test(p)) return p;
+    const base = state.apiBaseUrl || '';
+    if (!base) return p;
+    return `${base}${p.startsWith('/') ? p : `/${p}`}`;
+  }
+
+  function setApiBaseUrl(rawUrl) {
+    const normalized = normalizeApiBaseUrl(rawUrl);
+    state.apiBaseUrl = normalized;
+    try {
+      if (normalized) {
+        window.localStorage?.setItem(API_BASE_URL_STORAGE_KEY, normalized);
+      } else {
+        window.localStorage?.removeItem(API_BASE_URL_STORAGE_KEY);
+      }
+    } catch {
+      // Ignore storage write errors
+    }
+    if (ui && typeof ui.setBaseUrl === 'function') {
+      ui.setBaseUrl(normalized || window.location.origin);
+    }
+  }
+
   async function openAuthenticatedPdf(url, filename) {
     if (!state.token) return { ok: false, error: 'UNAUTHORIZED' };
-    const res = await fetch(url, {
+    const res = await fetch(buildApiUrl(url), {
       method: 'GET',
       headers: {
         Authorization: `Bearer ${state.token}`,
@@ -141,7 +213,8 @@ function initBrowserApp() {
   const ui = mountAutonmaxUI(root, {
     shell_enabled: true,
     ui_mode: 'guided',
-    baseUrl: window.location.origin,
+    baseUrl: state.apiBaseUrl || window.location.origin,
+    apiBaseUrl: state.apiBaseUrl || window.location.origin,
     output_actions: {
       async exportAppointmentsPdf({ partnerId, dateStr }) {
         if (!state.token || !partnerId) return { ok: false };
@@ -170,7 +243,7 @@ function initBrowserApp() {
     if (state.token) {
       headers.Authorization = `Bearer ${state.token}`;
     }
-    const res = await fetch(path, { ...options, headers });
+    const res = await fetch(buildApiUrl(path), { ...options, headers });
     const json = await res.json().catch(() => ({}));
     if (!res.ok || json.ok === false) {
       const err = new Error(json?.error?.message || `HTTP ${res.status}`);
@@ -247,6 +320,8 @@ function initBrowserApp() {
         mode: state.authMode,
         error: state.authError,
         message: state.authMessage,
+        apiBaseUrl: state.apiBaseUrl,
+        showServerConfig: state.isNativeShell && !state.apiBaseUrl,
       });
     }
   }
@@ -572,6 +647,16 @@ function initBrowserApp() {
       const email = String(fd.get('email') || '').trim();
       const password = String(fd.get('password') || '');
       const displayName = String(fd.get('displayName') || '').trim();
+      const submittedApiUrl = String(fd.get('apiBaseUrl') || '').trim();
+      if (submittedApiUrl !== state.apiBaseUrl) {
+        setApiBaseUrl(submittedApiUrl);
+      }
+
+      if (state.isNativeShell && !state.apiBaseUrl) {
+        state.authError = 'Informe a URL do servidor da API (ex: https://seu-app.onrender.com).';
+        renderAuthGate();
+        return;
+      }
 
       try {
         const endpoint =
